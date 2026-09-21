@@ -112,6 +112,15 @@ before(async () => {
   });
   await sondeo(`http://localhost:${PUERTO_PROLOG}/api/sintomas`, { timeout: 90000 });
   await sondeo(`http://localhost:${PUERTO_PROLOG}/api/fallas`, { timeout: 90000 });
+  await sondeo(`http://localhost:${PUERTO_PROLOG}/api/diagnostico`, {
+    timeout: 90000,
+    metodo: 'OPTIONS',
+    headers: {
+      Origin: WEB_URL,
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'content-type',
+    },
+  });
   await sondeo(`${WEB_URL}/`, { timeout: 90000 });
 
   const require = createRequire(import.meta.url);
@@ -289,7 +298,30 @@ test('08 | Prolog: GET /api/fallas expone el catálogo (única fuente de verdad)
   assert.equal(incompletas.length, 0, 'todas las fallas deben traer sus metadatos');
 });
 
-test('09 | React/Vite: index y sistema experto (asíncrono vía Prolog)', async () => {
+test('09 | Prolog: preflight CORS (OPTIONS) habilita fetch del navegador', async () => {
+  const res = await fetch(`http://localhost:${PUERTO_PROLOG}/api/diagnostico`, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: WEB_URL,
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'content-type',
+    },
+  });
+  assert.equal(res.status, 200, 'OPTIONS /api/diagnostico debe responder 200');
+  assert.equal(res.headers.get('access-control-allow-origin'), '*');
+  assert.match(res.headers.get('access-control-allow-methods') || '', /POST/);
+  assert.match(res.headers.get('access-control-allow-headers') || '', /Content-Type/i);
+
+  const get = await fetch(`http://localhost:${PUERTO_PROLOG}/api/sintomas`, {
+    method: 'OPTIONS',
+    headers: { Origin: WEB_URL, 'Access-Control-Request-Method': 'GET' },
+  });
+  assert.equal(get.status, 200, 'OPTIONS /api/sintomas debe responder 200');
+  assert.equal(get.headers.get('access-control-allow-origin'), '*');
+  assert.match(get.headers.get('access-control-allow-methods') || '', /GET/);
+});
+
+test('10 | React/Vite: index y sistema experto (asíncrono vía Prolog)', async () => {
   const index = await (await fetch(`${WEB_URL}/`)).text();
   assert.match(index, /<div id="root"><\/div>/);
   assert.match(index, /\/src\/main\.jsx/);
@@ -306,7 +338,7 @@ test('09 | React/Vite: index y sistema experto (asíncrono vía Prolog)', async 
   assert.doesNotMatch(appJsx, /baseConocimiento|inferir_fallas/);
 });
 
-test('10 | Flujo integrado: React(proxy) → backend → Mongo → stats', async () => {
+test('11 | Flujo integrado: React(proxy) → backend → Mongo → stats', async () => {
   const vehiculo = { marca: 'honda', modelo: 'civic', anio: 2015 };
   const sintomas = ['chirrido_al_frenar', 'pedal_freno_esponjoso'];
 

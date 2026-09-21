@@ -506,10 +506,18 @@ inicio :-
 
 :- set_setting(http:cors, [*]). % Permite recibir peticiones de cualquier página web
 
-% Definir el endpoint /api/diagnostico
-:- http_handler(root(api/diagnostico), procesar_api, [method(post), time_limit(infinite)]).
-:- http_handler(root(api/sintomas), procesar_sintomas, [method(get)]).
-:- http_handler(root(api/fallas), procesar_fallas, [method(get)]).
+% Definir los endpoints (método principal + preflight OPTIONS del navegador)
+:- http_handler(root(api/diagnostico), procesar_api, [methods([options, post]), time_limit(infinite)]).
+:- http_handler(root(api/sintomas), procesar_sintomas, [methods([options, get])]).
+:- http_handler(root(api/fallas), procesar_fallas, [methods([options, get])]).
+
+cors_reply(Metodos) :-
+    maplist(upcase_atom, Metodos, MetodosUp),
+    atomic_list_concat(MetodosUp, ', ', MetodosStr),
+    format('Access-Control-Allow-Origin: *~n'),
+    format('Access-Control-Allow-Methods: ~s~n', [MetodosStr]),
+    format('Access-Control-Allow-Headers: Content-Type~n'),
+    format('~n').
 
 % Comando para arrancar el servidor
 server :- server(8000).
@@ -518,6 +526,10 @@ server(Puerto) :-
     format('~n[+] Servidor Prolog corriendo exitosamente en http://localhost:~w/~n', [Puerto]),
     format('[+] Pagina Web lista para abrir.~n~n').
 
+procesar_api(Request) :-
+    option(method(options), Request),
+    !,
+    cors_reply([post]).
 procesar_api(Request) :-
     cors_enable,
     http_read_json_dict(Request, DictIn),
@@ -587,6 +599,10 @@ falla_a_dict(Certeza-Falla, Dict) :-
 reparacion_a_nombre(R, Nombre) :-
     (nombre_reparacion(R, Nombre) -> true ; atom_string(Nombre, R)).
 
+procesar_sintomas(Request) :-
+    option(method(options), Request),
+    !,
+    cors_reply([get]).
 procesar_sintomas(_Request) :-
     cors_enable,
     findall(S, clause(sintoma(S), _), SintomasIds),
@@ -606,6 +622,10 @@ sintoma_a_dict(S, Dict) :-
         categoria: C
     }.
 
+procesar_fallas(Request) :-
+    option(method(options), Request),
+    !,
+    cors_reply([get]).
 procesar_fallas(_Request) :-
     cors_enable,
     findall(F, clause(falla(F, _), _), FallasIds),

@@ -227,7 +227,7 @@ export default function App() {
             experto usa el motor de Prolog como única fuente de verdad. Inicia el servidor con:
           </p>
           <pre style={{ background: 'var(--surface)', padding: 12, borderRadius: 8, marginTop: 8 }}>
-            swipl -f Prolog/motor_inferencia.pl -g &ldquo;server(8000), sleep(3600)&rdquo; -t halt
+            swipl -f Prolog/motor_inferencia.pl -g "server(8000), sleep(3600)" -t halt
           </pre>
         </div>
       </div>
