@@ -1,0 +1,23 @@
+﻿{
+    "name":  "frontend",
+    "version":  "1.0.0",
+    "description":  "",
+    "main":  "index.js",
+    "scripts":  {
+                    "preview":  "vite preview",
+                    "build":  "vite build",
+                    "dev":  "vite"
+                },
+    "keywords":  [
+
+                 ],
+    "type":  "commonjs",
+    "dependencies":  {
+                         "react":  "^19.3.0",
+                         "react-dom":  "^19.3.0"
+                     },
+    "devDependencies":  {
+                            "@vitejs/plugin-react":  "^6.1.1",
+                            "vite":  "^8.3.0"
+                        }
+}
