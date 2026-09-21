@@ -1,17 +1,17 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, mkdtempSync, rmSync, writeFileSync, openSync, createWriteStream } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, openSync, createWriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const BACKEND_DIR = path.join(ROOT, 'backend');
 const FRONTEND_DIR = path.join(ROOT, 'frontend');
-const PL_FILE = path.join(ROOT, 'Car-Care-System', 'Prolog', 'motor_inferencia.pl');
+const PL_FILE = path.join(ROOT, 'Prolog', 'motor_inferencia.pl');
 const SWIPL = 'C:\\Program Files\\swipl\\bin\\swipl.exe';
 
 const PUERTO_PROLOG = 8000;
@@ -110,6 +110,8 @@ before(async () => {
     headers: { 'Content-Type': 'application/json' },
     cuerpo: JSON.stringify({ marca: 'gen', modelo: 'gen', anio: 0, sintomas: [] }),
   });
+  await sondeo(`http://localhost:${PUERTO_PROLOG}/api/sintomas`, { timeout: 90000 });
+  await sondeo(`http://localhost:${PUERTO_PROLOG}/api/fallas`, { timeout: 90000 });
   await sondeo(`${WEB_URL}/`, { timeout: 90000 });
 
   const require = createRequire(import.meta.url);
@@ -248,44 +250,46 @@ test('06 | Motor Prolog: casos oráculo vía HTTP', async () => {
   }
 });
 
-test('07 | Paridad Prolog ↔ motor JS (inferir_fallas)', async () => {
-  const tmpMod = mkdtempSync(path.join(tmpdir(), 'car-care-mod-'));
-  try {
-    writeFileSync(
-      path.join(tmpMod, 'baseConocimiento.mjs'),
-      readFileSync(path.join(FRONTEND_DIR, 'src', 'data', 'baseConocimiento.js'), 'utf8')
-    );
-    const inferencia = readFileSync(path.join(FRONTEND_DIR, 'src', 'motor', 'inferencia.js'), 'utf8').replace(
-      "from '../data/baseConocimiento.js'",
-      "from './baseConocimiento.mjs'"
-    );
-    writeFileSync(path.join(tmpMod, 'inferencia.mjs'), inferencia);
-    const mod = await import(pathToFileURL(path.join(tmpMod, 'inferencia.mjs')).href);
-    const { inferir_fallas, aplica_a } = mod;
+test('07 | Prolog: GET /api/sintomas expone el catálogo (única fuente de verdad)', async () => {
+  const res = await fetch(`http://localhost:${PUERTO_PROLOG}/api/sintomas`);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.status, 'success');
+  assert.ok(Array.isArray(data.sintomas));
+  assert.equal(data.sintomas.length, 27, 'deben servir los 27 síntomas del motor');
 
-    assert.equal(aplica_a('embrague_desgastado', 'honda', 'civic', 2015), true);
-    assert.equal(aplica_a('embrague_desgastado', 'toyota', 'corolla', 2022), false);
+  const freno = data.sintomas.find((s) => s.id === 'chirrido_al_frenar');
+  assert.ok(freno, 'chirrido_al_frenar debe estar en el catálogo');
+  assert.equal(freno.nombre, 'Chirrido al frenar');
+  assert.equal(freno.categoria, 'Frenos');
 
-    const casos = [
-      { marca: 'gen', modelo: 'gen', anio: 0, sintomas: ['chirrido_al_frenar', 'pedal_freno_esponjoso'], esperado: ['0.87-sistema_frenos_con_aire'] },
-      { marca: 'gen', modelo: 'gen', anio: 0, sintomas: ['chirrido_al_frenar'], esperado: ['0.72-pastillas_freno'] },
-      { marca: 'honda', modelo: 'civic', anio: 2015, sintomas: ['marchas_resbalan', 'pedal_embrague_suelto'], esperado: ['0.88-embrague_desgastado'] },
-      { marca: 'toyota', modelo: 'corolla', anio: 2022, sintomas: ['marchas_resbalan', 'pedal_embrague_suelto'], esperado: [] },
-    ];
-
-    for (const c of casos) {
-      const js = inferir_fallas(c.sintomas, c.marca, c.modelo, c.anio);
-      assert.deepEqual(js, c.esperado, `JS: caso ${c.marca}/${c.modelo}`);
-      const prolog = await prologDiagnostico({ marca: c.marca, modelo: c.modelo, anio: c.anio, sintomas: c.sintomas });
-      const prologPares = prolog.fallas.map((f) => `${f.certeza}-${f.id}`);
-      assert.deepEqual(js, prologPares, `Paridad Prolog↔JS en ${c.marca}/${c.modelo}`);
-    }
-  } finally {
-    rmSync(tmpMod, { recursive: true, force: true });
-  }
+  const incompletos = data.sintomas.filter((s) => !s.nombre || !s.categoria);
+  assert.equal(incompletos.length, 0, 'todos los síntomas deben tener nombre y categoría');
 });
 
-test('08 | React/Vite: index y módulos del sistema experto sirven', async () => {
+test('08 | Prolog: GET /api/fallas expone el catálogo (única fuente de verdad)', async () => {
+  const res = await fetch(`http://localhost:${PUERTO_PROLOG}/api/fallas`);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.status, 'success');
+  assert.ok(Array.isArray(data.fallas));
+  assert.equal(data.fallas.length, 20, 'deben servir las 20 fallas del motor');
+
+  const freno = data.fallas.find((f) => f.id === 'sistema_frenos_con_aire');
+  assert.ok(freno, 'sistema_frenos_con_aire debe estar en el catálogo');
+  assert.equal(freno.nombre, 'Sistema de frenos con aire');
+  assert.equal(freno.urgencia, 'alta');
+  assert.equal(freno.costo_min, 300);
+  assert.equal(freno.costo_max, 1200);
+  assert.ok(freno.reparaciones.length >= 3, 'debe listar pasos de reparación con nombre');
+
+  const incompletas = data.fallas.filter(
+    (f) => !f.nombre || !f.urgencia || typeof f.costo_min !== 'number' || !Array.isArray(f.reparaciones)
+  );
+  assert.equal(incompletas.length, 0, 'todas las fallas deben traer sus metadatos');
+});
+
+test('09 | React/Vite: index y sistema experto (asíncrono vía Prolog)', async () => {
   const index = await (await fetch(`${WEB_URL}/`)).text();
   assert.match(index, /<div id="root"><\/div>/);
   assert.match(index, /\/src\/main\.jsx/);
@@ -296,17 +300,13 @@ test('08 | React/Vite: index y módulos del sistema experto sirven', async () =>
 
   const appJsx = await (await fetch(`${WEB_URL}/src/App.jsx`)).text();
   assert.match(appJsx, /Análisis de Fallas/);
-  assert.match(appJsx, /baseConocimiento\.js/);
-  assert.match(appJsx, /inferencia\.js/);
-
-  const conocimiento = await (await fetch(`${WEB_URL}/src/data/baseConocimiento.js`)).text();
-  assert.match(conocimiento, /sistema_frenos_con_aire/);
-
-  const inferencia = await (await fetch(`${WEB_URL}/src/motor/inferencia.js`)).text();
-  assert.match(inferencia, /inferir_fallas/);
+  assert.match(appJsx, /api\/sintomas/);
+  assert.match(appJsx, /api\/fallas/);
+  assert.match(appJsx, /api\/diagnostico/);
+  assert.doesNotMatch(appJsx, /baseConocimiento|inferir_fallas/);
 });
 
-test('09 | Flujo integrado: React(proxy) → backend → Mongo → stats', async () => {
+test('10 | Flujo integrado: React(proxy) → backend → Mongo → stats', async () => {
   const vehiculo = { marca: 'honda', modelo: 'civic', anio: 2015 };
   const sintomas = ['chirrido_al_frenar', 'pedal_freno_esponjoso'];
 

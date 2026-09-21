@@ -1,8 +1,8 @@
-﻿import { useEffect, useState } from 'react';
-import { sintomas_prolog, fallas_prolog, reparaciones_prolog } from './data/baseConocimiento.js';
-import { inferir_fallas } from './motor/inferencia.js';
+import { useEffect, useState } from 'react';
 
 const PROLOG_URL = 'http://localhost:8000/api/diagnostico';
+const PROLOG_SINTOMAS_URL = 'http://localhost:8000/api/sintomas';
+const PROLOG_FALLAS_URL = 'http://localhost:8000/api/fallas';
 const API_DIAGNOSTICOS = '/api/diagnosticos';
 
 const urgenciaClase = (u) =>
@@ -15,41 +15,26 @@ const fechaHoy = new Date().toLocaleDateString('es-ES', {
   year: 'numeric',
 });
 
-function mapearProlog(f) {
-  const base = fallas_prolog.find((x) => x.id === f.id);
-  const urg =
-    f.urgencia === 'critica'
-      ? 'Crítica'
-      : f.urgencia === 'alta'
-        ? 'Alta'
-        : f.urgencia === 'media'
-          ? 'Media'
-          : f.urgencia === 'baja'
-            ? 'Baja'
-            : 'Desconocida';
+function etiquetaUrgencia(u) {
+  switch (u) {
+    case 'critica': return 'Crítica';
+    case 'alta': return 'Alta';
+    case 'media': return 'Media';
+    case 'baja': return 'Baja';
+    default: return 'Desconocida';
+  }
+}
+
+function mapearProlog(f, catalogoFallas) {
+  const base = catalogoFallas.find((x) => x.id === f.id);
   return {
     id: f.id,
     nombre: base ? base.nombre : f.id.replace(/_/g, ' '),
-    urgencia: urg,
+    urgencia: etiquetaUrgencia(f.urgencia || base?.urgencia),
     costo_min: f.costo_min,
     costo_max: f.costo_max,
-    reparaciones: (f.reparaciones || []).map((r) => String(r).replace(/_/g, ' ')),
-  };
-}
-
-function mapearInferenciaJS(par) {
-  const split = par.split('-');
-  const certeza = parseFloat(split[0]);
-  const id = split.slice(1).join('-');
-  const base = fallas_prolog.find((x) => x.id === id);
-  return {
-    id: base ? base.id : id,
-    nombre: base ? base.nombre : id.replace(/_/g, ' '),
-    urgencia: base ? base.urgencia : 'Desconocida',
-    costo_min: base ? base.costo_min : 0,
-    costo_max: base ? base.costo_max : 0,
-    reparaciones: (reparaciones_prolog[id] || []).map((r) => r.replace(/_/g, ' ')),
-    certeza,
+    reparaciones: f.reparaciones || [],
+    certeza: f.certeza,
   };
 }
 
@@ -59,6 +44,34 @@ export default function App() {
   const [vehiculoActual, setVehiculoActual] = useState(null);
   const [sintomasConfirmados, setSintomasConfirmados] = useState([]);
   const [resultados, setResultados] = useState(null);
+  const [engineStatus, setEngineStatus] = useState('loading');
+  const [sintomasCatalogo, setSintomasCatalogo] = useState([]);
+  const [fallasCatalogo, setFallasCatalogo] = useState([]);
+
+  useEffect(() => {
+    let activo = true;
+    (async () => {
+      try {
+        const [sRes, fRes] = await Promise.all([
+          fetch(PROLOG_SINTOMAS_URL),
+          fetch(PROLOG_FALLAS_URL),
+        ]);
+        if (!sRes.ok || !fRes.ok) throw new Error('El motor no responde');
+        const sData = await sRes.json();
+        const fData = await fRes.json();
+        if (!activo) return;
+        setSintomasCatalogo(sData.sintomas || []);
+        setFallasCatalogo(fData.fallas || []);
+        setEngineStatus('ok');
+      } catch (err) {
+        if (!activo) return;
+        setEngineStatus('error');
+      }
+    })();
+    return () => {
+      activo = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!vehiculoActual || sintomasConfirmados.length === 0) {
@@ -71,7 +84,6 @@ export default function App() {
 
     const { marca, modelo, anio } = vehiculoActual;
     (async () => {
-      let fallas = [];
       try {
         const res = await fetch(PROLOG_URL, {
           method: 'POST',
@@ -80,30 +92,29 @@ export default function App() {
         });
         if (!res.ok) throw new Error('Servidor apagado');
         const data = await res.json();
-        fallas = (data.fallas || []).map(mapearProlog);
+        if (!activo) return;
+        const fallas = (data.fallas || []).map((f) => mapearProlog(f, fallasCatalogo));
+        setResultados({ fallas });
+
+        fetch(API_DIAGNOSTICOS, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            vehiculo: { marca, modelo, anio },
+            sintomas: sintomasConfirmados,
+            fallas: fallas.map((f) => ({ falla: f.id, certeza: f.certeza ?? 0 })),
+          }),
+        }).catch(() => {});
       } catch (err) {
-        console.warn('Servidor Prolog no detectado. Usando inferencia local.');
-        fallas = inferir_fallas(sintomasConfirmados, marca, modelo, anio).map(mapearInferenciaJS);
+        if (!activo) return;
+        setResultados({ error: err.message });
       }
-
-      if (!activo) return;
-      setResultados({ fallas });
-
-      fetch(API_DIAGNOSTICOS, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          vehiculo: { marca, modelo, anio },
-          sintomas: sintomasConfirmados,
-          fallas: fallas.map((f) => ({ falla: f.id, certeza: f.certeza ?? 0 })),
-        }),
-      }).catch(() => {});
     })();
 
     return () => {
       activo = false;
     };
-  }, [vehiculoActual, sintomasConfirmados]);
+  }, [vehiculoActual, sintomasConfirmados, fallasCatalogo]);
 
   const cambiarVehiculo = () => {
     setVehiculoActual(null);
@@ -178,6 +189,7 @@ export default function App() {
         </section>
 
         <section id="content-area" className="content-area">
+          {renderEngineBanner()}
           {section === 'diagnostico'
             ? !vehiculoActual
               ? renderPaso1Vehiculo()
@@ -187,6 +199,40 @@ export default function App() {
       </main>
     </div>
   );
+
+  function renderEngineBanner() {
+    if (engineStatus === 'ok') return null;
+    if (engineStatus === 'loading') {
+      return (
+        <div className="info-card" style={{ marginBottom: 24 }}>
+          <div className="card-body">
+            <p style={{ color: 'var(--muted)' }}>
+              Conectando con el motor de inferencia de Prolog en http://localhost:8000...
+            </p>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="info-card" style={{ marginBottom: 24 }}>
+        <div className="card-header">
+          <div>
+            <p className="card-category">Error de conexión</p>
+            <h3>Motor de Prolog no disponible</h3>
+          </div>
+        </div>
+        <div className="card-body">
+          <p style={{ color: '#b00020' }}>
+            No se pudo conectar con el servidor de Prolog (http://localhost:8000). El sistema
+            experto usa el motor de Prolog como única fuente de verdad. Inicia el servidor con:
+          </p>
+          <pre style={{ background: 'var(--surface)', padding: 12, borderRadius: 8, marginTop: 8 }}>
+            swipl -f Prolog/motor_inferencia.pl -g &ldquo;server(8000), sleep(3600)&rdquo; -t halt
+          </pre>
+        </div>
+      </div>
+    );
+  }
 
   function renderPaso1Vehiculo() {
     return (
@@ -244,7 +290,7 @@ export default function App() {
   }
 
   function renderPaso2Sintomas() {
-    const filtrados = sintomas_prolog.filter((s) =>
+    const filtrados = sintomasCatalogo.filter((s) =>
       `${s.nombre} ${s.categoria}`.toLowerCase().includes(searchQuery)
     );
 
@@ -313,6 +359,22 @@ export default function App() {
   }
 
   function renderResultados() {
+    if (resultados.error) {
+      return (
+        <div className="info-card" style={{ marginTop: 24 }}>
+          <div className="card-header">
+            <div>
+              <p className="card-category">Error de conexión</p>
+              <h3>Fallo al consultar el motor de Prolog</h3>
+            </div>
+          </div>
+          <div className="card-body">
+            <p style={{ color: '#b00020' }}>{resultados.error}</p>
+          </div>
+        </div>
+      );
+    }
+
     const cargando = resultados.cargando;
     const fallas = resultados.fallas || [];
 
@@ -366,8 +428,8 @@ export default function App() {
   }
 
   function renderBaseConocimiento() {
-    const filtradas = fallas_prolog.filter((f) =>
-      `${f.nombre} ${f.urgencia}`.toLowerCase().includes(searchQuery)
+    const filtradas = fallasCatalogo.filter((f) =>
+      `${f.nombre} ${etiquetaUrgencia(f.urgencia)}`.toLowerCase().includes(searchQuery)
     );
 
     if (filtradas.length === 0) {
@@ -382,31 +444,34 @@ export default function App() {
 
     return (
       <div className="knowledge-grid">
-        {filtradas.map((f) => (
-          <article className="info-card common-falla-card" key={f.id}>
-            <div className="card-header">
-              <div>
-                <p className="card-category">Falla</p>
-                <h3>{f.nombre}</h3>
+        {filtradas.map((f) => {
+          const urgencia = etiquetaUrgencia(f.urgencia);
+          return (
+            <article className="info-card common-falla-card" key={f.id}>
+              <div className="card-header">
+                <div>
+                  <p className="card-category">Falla</p>
+                  <h3>{f.nombre}</h3>
+                </div>
+                <span className={`badge ${urgenciaClase(urgencia)}`}>{urgencia}</span>
               </div>
-              <span className={`badge ${urgenciaClase(f.urgencia)}`}>{f.urgencia}</span>
-            </div>
-            <div className="card-body">
-              <div className="card-section">
-                <h4>Causas/Pasos</h4>
-                <ul>
-                  {(reparaciones_prolog[f.id] || ['Sin datos']).map((p) => (
-                    <li key={p}>{p.replace(/_/g, ' ')}</li>
-                  ))}
-                </ul>
+              <div className="card-body">
+                <div className="card-section">
+                  <h4>Causas/Pasos</h4>
+                  <ul>
+                    {(f.reparaciones || ['Sin datos']).map((p) => (
+                      <li key={p}>{p}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="card-footer">
+                  <span>Costo</span>
+                  <strong>${f.costo_min} - ${f.costo_max}</strong>
+                </div>
               </div>
-              <div className="card-footer">
-                <span>Costo</span>
-                <strong>${f.costo_min} - ${f.costo_max}</strong>
-              </div>
-            </div>
-          </article>
-        ))}
+            </article>
+          );
+        })}
       </div>
     );
   }

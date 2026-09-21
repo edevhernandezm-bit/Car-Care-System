@@ -118,6 +118,63 @@ sintoma(charco_aceite_motor)         :- preguntar(sintoma, charco_aceite_motor).
 sintoma(olor_quemado_llantas)        :- preguntar(sintoma, olor_quemado_llantas).
 sintoma(ruido_metalico_motor)        :- preguntar(sintoma, ruido_metalico_motor).
 
+% NOMBRES Y CATEGORÍAS DE SÍNTOMAS PARA EL UI (fuente única en Prolog)
+nombre_sintoma(chirrido_al_frenar, 'Chirrido al frenar').
+nombre_sintoma(pedal_freno_esponjoso, 'Pedal de freno esponjoso').
+nombre_sintoma(olor_quemado_llantas, 'Olor a llantas quemadas').
+nombre_sintoma(humo_azul, 'Humo azul en escape').
+nombre_sintoma(perdida_potencia, 'Pérdida de potencia').
+nombre_sintoma(olor_gasolina_bayeta, 'Olor a gasolina/bayeta').
+nombre_sintoma(sobrecalentamiento, 'Sobrecalentamiento del motor').
+nombre_sintoma(nivel_bajo_anticongelante, 'Nivel bajo de anticongelante').
+nombre_sintoma(luz_check_engine, 'Luz check engine encendida').
+nombre_sintoma(consumo_excesivo_combustible, 'Consumo excesivo de combustible').
+nombre_sintoma(humo_blanco_escape, 'Humo blanco en escape').
+nombre_sintoma(humo_negro_escape, 'Humo negro en escape').
+nombre_sintoma(tirones_al_acelerar, 'Tirones al acelerar').
+nombre_sintoma(charco_aceite_motor, 'Charco de aceite bajo motor').
+nombre_sintoma(ruido_metalico_motor, 'Ruido metálico en motor').
+nombre_sintoma(motor_no_gira, 'Motor no gira').
+nombre_sintoma(luces_debiles, 'Luces débiles').
+nombre_sintoma(falla_encendido, 'Falla en encendido').
+nombre_sintoma(marchas_resbalan, 'Marchas resbalan').
+nombre_sintoma(pedal_embrague_suelto, 'Pedal de embrague suelto').
+nombre_sintoma(volante_duro, 'Volante duro').
+nombre_sintoma(fuga_liquido_direccion, 'Fuga de líquido de dirección').
+nombre_sintoma(vibracion_encendido_aire, 'Vibración al encender con aire').
+nombre_sintoma(ruido_clac_clac_girar, 'Ruido clac-clac al girar').
+nombre_sintoma(vibracion_volante_alta_vel, 'Vibración en volante a alta velocidad').
+nombre_sintoma(aire_acondicionado_no_enfria, 'Aire acondicionado no enfría').
+nombre_sintoma(ruido_correa_acelerar, 'Ruido de correa al acelerar').
+
+categoria_sintoma(chirrido_al_frenar, 'Frenos').
+categoria_sintoma(pedal_freno_esponjoso, 'Frenos').
+categoria_sintoma(olor_quemado_llantas, 'Frenos').
+categoria_sintoma(humo_azul, 'Motor').
+categoria_sintoma(perdida_potencia, 'Motor').
+categoria_sintoma(olor_gasolina_bayeta, 'Motor').
+categoria_sintoma(sobrecalentamiento, 'Refrigeración').
+categoria_sintoma(nivel_bajo_anticongelante, 'Refrigeración').
+categoria_sintoma(luz_check_engine, 'Motor').
+categoria_sintoma(consumo_excesivo_combustible, 'Motor').
+categoria_sintoma(humo_blanco_escape, 'Motor').
+categoria_sintoma(humo_negro_escape, 'Motor').
+categoria_sintoma(tirones_al_acelerar, 'Motor').
+categoria_sintoma(charco_aceite_motor, 'Aceite').
+categoria_sintoma(ruido_metalico_motor, 'Motor').
+categoria_sintoma(motor_no_gira, 'Encendido').
+categoria_sintoma(luces_debiles, 'Electricidad').
+categoria_sintoma(falla_encendido, 'Encendido').
+categoria_sintoma(marchas_resbalan, 'Transmisión').
+categoria_sintoma(pedal_embrague_suelto, 'Transmisión').
+categoria_sintoma(volante_duro, 'Dirección').
+categoria_sintoma(fuga_liquido_direccion, 'Dirección').
+categoria_sintoma(vibracion_encendido_aire, 'Suspensión').
+categoria_sintoma(ruido_clac_clac_girar, 'Suspensión').
+categoria_sintoma(vibracion_volante_alta_vel, 'Suspensión').
+categoria_sintoma(aire_acondicionado_no_enfria, 'Climatización').
+categoria_sintoma(ruido_correa_acelerar, 'Accesorios').
+
 
 
 % FALLAS
@@ -157,6 +214,28 @@ falla(correa_accesorios_desgastada,    0.76) :- sintoma(ruido_correa_acelerar).
 falla(llantas_desbalanceadas,          0.70) :- sintoma(vibracion_volante_alta_vel).
 falla(fuga_carter_aceite,              0.80) :- sintoma(charco_aceite_motor).
 falla(frenos_sobrecalentados,          0.77) :- sintoma(olor_quemado_llantas).
+
+% NOMBRES DE FALLA PARA EL UI (fuente única en Prolog)
+nombre_falla(falta_lubricacion_motor, 'Falta de lubricación del motor').
+nombre_falla(junta_culata_quemada, 'Junta de culata quemada').
+nombre_falla(bateria_descargada_o_alternador, 'Batería descargada o alternador').
+nombre_falla(fuga_sistema_refrigeracion, 'Fuga en sistema de refrigeración').
+nombre_falla(embrague_desgastado, 'Embrague desgastado').
+nombre_falla(bomba_direccion_averiada, 'Bomba de dirección averiada').
+nombre_falla(sistema_frenos_con_aire, 'Sistema de frenos con aire').
+nombre_falla(frenos_sobrecalentados, 'Frenos sobrecalentados').
+nombre_falla(bobina_encendido_defectuosa, 'Bobina de encendido defectuosa').
+nombre_falla(sensor_oxigeno_defectuoso, 'Sensor de oxígeno defectuoso').
+nombre_falla(junta_homocinetica_daniada, 'Junta homocinética dañada').
+nombre_falla(inyectores_sucios, 'Inyectores sucios').
+nombre_falla(fuga_carter_aceite, 'Fuga en cárter de aceite').
+nombre_falla(sellos_valvula, 'Sellos de válvula defectuosos').
+nombre_falla(pastillas_freno, 'Pastillas de freno desgastadas').
+nombre_falla(correa_accesorios_desgastada, 'Correa de accesorios desgastada').
+nombre_falla(dilucion_aceite, 'Dilución de aceite').
+nombre_falla(aspas_ventilador_radiador, 'Aspas del ventilador del radiador').
+nombre_falla(falta_gas_refrigerante, 'Falta de gas refrigerante').
+nombre_falla(llantas_desbalanceadas, 'Llantas desbalanceadas').
 
 
 % REPARACIONES, EXPLICACIONES, URGENCIA Y COSTOS
@@ -201,6 +280,66 @@ reparacion(llantas_desbalanceadas,          [inspeccionar_desgaste_llantas, bala
 reparacion(fuga_carter_aceite,              [limpiar_zona_fuga, apretar_tornillos_carter, reemplazar_empaque_carter]).
 reparacion(frenos_sobrecalentados,          [dejar_enfriar_frenos, revisar_liquido_frenos, purgar_sistema]).
 reparacion(falta_lubricacion_motor,         [apagar_motor_inmediatamente, medir_nivel_aceite, revisar_bomba_aceite]).
+
+% NOMBRES DE PASOS DE REPARACIÓN PARA EL UI (fuente única en Prolog)
+nombre_reparacion(inspeccionar_mangueras, 'Inspeccionar mangueras').
+nombre_reparacion(sellar_fugas, 'Sellar fugas').
+nombre_reparacion(rellenar_anticongelante, 'Rellenar anticongelante').
+nombre_reparacion(verificar_voltaje_alternador, 'Verificar voltaje alternador').
+nombre_reparacion(cargar_bateria, 'Cargar batería').
+nombre_reparacion(reemplazar_bateria_si_falla, 'Reemplazar batería si falla').
+nombre_reparacion(purgar_lineas_freno, 'Purgar líneas de freno').
+nombre_reparacion(rellenar_liquido_frenos, 'Rellenar líquido de frenos').
+nombre_reparacion(revisar_pastillas, 'Revisar pastillas').
+nombre_reparacion(escanear_codigo_error, 'Escanear código de error').
+nombre_reparacion(cambiar_bujias, 'Cambiar bujías').
+nombre_reparacion(reemplazar_bobina, 'Reemplazar bobina').
+nombre_reparacion(revisar_nivel_liquido, 'Revisar nivel de líquido').
+nombre_reparacion(inspeccionar_mangueras_direccion, 'Inspeccionar mangueras').
+nombre_reparacion(reemplazar_bomba, 'Reemplazar bomba').
+nombre_reparacion(escanear_computadora, 'Escanear computadora').
+nombre_reparacion(revisar_cableado_sensor, 'Revisar cableado').
+nombre_reparacion(reemplazar_sensor_oxigeno, 'Reemplazar sensor').
+nombre_reparacion(revisar_cable_embrague, 'Revisar cable embrague').
+nombre_reparacion(purgar_liquido_embrague, 'Purgar líquido embrague').
+nombre_reparacion(cambiar_kit_embrague, 'Cambiar kit embrague').
+nombre_reparacion(medir_compresion_cilindros, 'Medir compresión cilindros').
+nombre_reparacion(rectificar_culata, 'Rectificar culata').
+nombre_reparacion(reemplazar_junta_culata, 'Reemplazar junta culata').
+nombre_reparacion(inspeccionar_guardapolvos, 'Inspeccionar guardapolvos').
+nombre_reparacion(engrasar_junta, 'Engrasar junta').
+nombre_reparacion(reemplazar_junta_homocinetica, 'Reemplazar junta').
+nombre_reparacion(agregar_aditivo_limpiador, 'Agregar aditivo limpiador').
+nombre_reparacion(realizar_limpieza_ultrasonido, 'Limpieza ultrasónica').
+nombre_reparacion(calibrar_inyectores, 'Calibrar inyectores').
+nombre_reparacion(verificar_desgaste, 'Verificar desgaste').
+nombre_reparacion(ajustar_caliper, 'Ajustar caliper').
+nombre_reparacion(cambiar_pastillas, 'Cambiar pastillas').
+nombre_reparacion(verificar_compresion, 'Verificar compresión').
+nombre_reparacion(ajustar_valvulas, 'Ajustar válvulas').
+nombre_reparacion(cambiar_sellos, 'Cambiar sellos').
+nombre_reparacion(reemplazar_unidad_control_aire, 'Reemplazar unidad control aire').
+nombre_reparacion(cambiar_aceite_y_filtro, 'Cambiar aceite y filtro').
+nombre_reparacion(verificar_conexion_electrica, 'Verificar conexión eléctrica').
+nombre_reparacion(cambiar_aspas_ventilador, 'Cambiar aspas ventilador').
+nombre_reparacion(buscar_fugas_con_uv, 'Buscar fugas con UV').
+nombre_reparacion(sellar_sistema_ac, 'Sellar sistema AC').
+nombre_reparacion(recargar_gas_refrigerante, 'Recargar gas refrigerante').
+nombre_reparacion(inspeccionar_tension, 'Inspeccionar tensión').
+nombre_reparacion(revisar_poleas, 'Revisar poleas').
+nombre_reparacion(reemplazar_correa_serpentina, 'Reemplazar correa serpentina').
+nombre_reparacion(inspeccionar_desgaste_llantas, 'Inspeccionar desgaste').
+nombre_reparacion(balancear_llantas, 'Balancear llantas').
+nombre_reparacion(alinear_direccion, 'Alinear dirección').
+nombre_reparacion(limpiar_zona_fuga, 'Limpiar zona de fuga').
+nombre_reparacion(apretar_tornillos_carter, 'Apretar tornillos carter').
+nombre_reparacion(reemplazar_empaque_carter, 'Reemplazar empaque').
+nombre_reparacion(apagar_motor_inmediatamente, 'Apagar motor inmediatamente').
+nombre_reparacion(medir_nivel_aceite, 'Medir nivel de aceite').
+nombre_reparacion(revisar_bomba_aceite, 'Revisar bomba de aceite').
+nombre_reparacion(dejar_enfriar_frenos, 'Dejar enfriar frenos').
+nombre_reparacion(revisar_liquido_frenos, 'Revisar líquido de frenos').
+nombre_reparacion(purgar_sistema, 'Purgar sistema').
 
 explicacion(fuga_sistema_refrigeracion) :- writeln('  Razon: El sobrecalentamiento combinado con nivel bajo de anticongelante indica una perdida activa.').
 explicacion(bateria_descargada_o_alternador) :- writeln('  Razon: Motor no gira y luces debiles apuntan a fuente de energia electrica comprometida.').
@@ -369,6 +508,8 @@ inicio :-
 
 % Definir el endpoint /api/diagnostico
 :- http_handler(root(api/diagnostico), procesar_api, [method(post), time_limit(infinite)]).
+:- http_handler(root(api/sintomas), procesar_sintomas, [method(get)]).
+:- http_handler(root(api/fallas), procesar_fallas, [method(get)]).
 
 % Comando para arrancar el servidor
 server :- server(8000).
@@ -433,11 +574,58 @@ inyectar_sintoma(S) :- asserta(conocido(s, sintoma, S)).
 falla_a_dict(Certeza-Falla, Dict) :-
     (meta_falla(Falla, urgencia(Urg), costo(Min, Max)) -> true ; Urg=desconocida, Min=0, Max=0),
     (reparacion(Falla, Rep) -> true ; Rep=[]),
+    maplist(reparacion_a_nombre, Rep, RepNombres),
     Dict = _{
         id: Falla,
         certeza: Certeza,
         urgencia: Urg,
         costo_min: Min,
         costo_max: Max,
-        reparaciones: Rep
+        reparaciones: RepNombres
+    }.
+
+reparacion_a_nombre(R, Nombre) :-
+    (nombre_reparacion(R, Nombre) -> true ; atom_string(Nombre, R)).
+
+procesar_sintomas(_Request) :-
+    cors_enable,
+    findall(S, clause(sintoma(S), _), SintomasIds),
+    sort(SintomasIds, SintomasOrdenados),
+    maplist(sintoma_a_dict, SintomasOrdenados, SintomasDict),
+    reply_json_dict(_{
+        status: "success",
+        sintomas: SintomasDict
+    }).
+
+sintoma_a_dict(S, Dict) :-
+    (nombre_sintoma(S, N) -> true ; atom_string(N, S)),
+    (categoria_sintoma(S, C) -> true ; C = "General"),
+    Dict = _{
+        id: S,
+        nombre: N,
+        categoria: C
+    }.
+
+procesar_fallas(_Request) :-
+    cors_enable,
+    findall(F, clause(falla(F, _), _), FallasIds),
+    sort(FallasIds, FallasOrdenadas),
+    maplist(falla_meta_a_dict, FallasOrdenadas, FallasDict),
+    reply_json_dict(_{
+        status: "success",
+        fallas: FallasDict
+    }).
+
+falla_meta_a_dict(F, Dict) :-
+    (nombre_falla(F, N) -> true ; atom_string(N, F)),
+    (meta_falla(F, urgencia(Urg), costo(Min, Max)) -> true ; Urg=desconocida, Min=0, Max=0),
+    (reparacion(F, Rep) -> true ; Rep=[]),
+    maplist(reparacion_a_nombre, Rep, RepNombres),
+    Dict = _{
+        id: F,
+        nombre: N,
+        urgencia: Urg,
+        costo_min: Min,
+        costo_max: Max,
+        reparaciones: RepNombres
     }.
