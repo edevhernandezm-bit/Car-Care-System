@@ -1,3 +1,5 @@
+:- encoding(utf8).
+
 % SISTEMA EXPERTO - TALLER AUTOMOTRIZ
 
 % --- MEMORIA DINÁMICA ---

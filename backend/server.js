@@ -8,6 +8,10 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/car_care_s
 
 app.use(cors());
 app.use(express.json());
+app.use((req, res, next) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  next();
+});
 
 mongoose
   .connect(MONGO_URI)
