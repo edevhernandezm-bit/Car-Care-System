@@ -330,12 +330,18 @@ test('10 | React/Vite: index y sistema experto (asíncrono vía Prolog)', async 
   assert.match(mainJsx, /styles\.css/);
   assert.match(mainJsx, /App\.jsx/);
 
+  // Los endpoints del motor viven en lib/api.js y la vista en App.jsx: se revisa
+  // la fuente del frontend completo para que la prueba siga siendo válida aunque
+  // el código cambie de archivo.
   const appJsx = await (await fetch(`${WEB_URL}/src/App.jsx`)).text();
-  assert.match(appJsx, /Análisis de Fallas/);
-  assert.match(appJsx, /api\/sintomas/);
-  assert.match(appJsx, /api\/fallas/);
-  assert.match(appJsx, /api\/diagnostico/);
-  assert.doesNotMatch(appJsx, /baseConocimiento|inferir_fallas/);
+  const apiJs = await (await fetch(`${WEB_URL}/src/lib/api.js`)).text();
+  const fuenteFrontend = `${appJsx}\n${apiJs}`;
+
+  assert.match(fuenteFrontend, /Análisis de Fallas/);
+  assert.match(fuenteFrontend, /api\/sintomas/);
+  assert.match(fuenteFrontend, /api\/fallas/);
+  assert.match(fuenteFrontend, /api\/diagnostico/);
+  assert.doesNotMatch(fuenteFrontend, /baseConocimiento|inferir_fallas/);
 });
 
 test('11 | Flujo integrado: React(proxy) → backend → Mongo → stats', async () => {

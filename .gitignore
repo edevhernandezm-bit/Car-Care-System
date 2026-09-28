@@ -13,3 +13,8 @@ desktop.ini
 .vscode/
 .idea/
 backend/*.ps1
+
+# Configuracion local de agentes (skills, hooks y settings de Claude Code).
+# El workflow de react-doctor vive en .github/ y si se versiona.
+.agents/
+.claude/
