@@ -14,7 +14,16 @@ desktop.ini
 .idea/
 backend/*.ps1
 
+# Motor Prolog v1 (v2.1) conservado como referencia local. Queda en el historial
+# de git (commit 5130626); el archivo activo es Prolog/motor_inferencia.pl (v3.0).
+Prolog/*.bak
+
 # Configuracion local de agentes (skills, hooks y settings de Claude Code).
 # El workflow de react-doctor vive en .github/ y si se versiona.
 .agents/
 .claude/
+.opencode/
+skills-lock.json
+
+# Grafo de conocimiento generado por Understand Anything (/understand)
+.ua/

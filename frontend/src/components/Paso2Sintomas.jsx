@@ -1,3 +1,6 @@
+import { etiquetaAnio, etiquetaTransmision } from '../lib/diagnostico.js';
+import EstadoVacio from './EstadoVacio.jsx';
+
 export default function Paso2Sintomas({
   vehiculo,
   sintomasCatalogo,
@@ -6,6 +9,7 @@ export default function Paso2Sintomas({
   onToggle,
   onCambiarVehiculo,
   onEjecutar,
+  onLimpiarBusqueda,
 }) {
   const filtrados = sintomasCatalogo.filter((s) =>
     `${s.nombre} ${s.categoria}`.toLowerCase().includes(searchQuery)
@@ -19,14 +23,17 @@ export default function Paso2Sintomas({
 
   return (
     <div className="diagnostico-container">
-      <div className="info-card">
+      {/* Cabecera sin marco: antes envolvia a las tarjetas de categoria, y dos
+          superficies anidadas se leen como un nivel de mas. */}
+      <section className="results-panel">
         <div className="card-header">
           <div>
             <p className="card-category">Paso 2 de 2: Cuestionario</p>
             <h3>
               Analizando:{' '}
               <span className="text-primary">
-                {vehiculo.marca.toUpperCase()} {vehiculo.modelo.toUpperCase()} ({vehiculo.anio})
+                {vehiculo.marca.toUpperCase()} {vehiculo.modelo.toUpperCase()} ({etiquetaAnio(vehiculo.anio)}) ·{' '}
+                {etiquetaTransmision(vehiculo.transmision)}
               </span>
             </h3>
           </div>
@@ -34,20 +41,29 @@ export default function Paso2Sintomas({
             Cambiar Vehículo
           </button>
         </div>
-      </div>
+      </section>
 
       {Object.keys(categorias).length === 0 ? (
-        <div className="info-card">
-          <div className="card-body">
-            <p className="text-muted">
-              No encontramos ese síntoma. Intenta buscar usando términos más generales como
-              'ruido', 'humo' o 'freno'.
-            </p>
-          </div>
-        </div>
+        <EstadoVacio
+          titulo={
+            searchQuery
+              ? `Ningún síntoma coincide con "${searchQuery}"`
+              : 'No hay síntomas disponibles'
+          }
+          causa={
+            searchQuery
+              ? 'Prueba con términos más generales como "ruido", "humo" o "freno", o revisa la ortografía.'
+              : 'El catálogo de síntomas está vacío. Levanta el servidor de Prolog.'
+          }
+          accion={
+            searchQuery
+              ? { etiqueta: 'Limpiar búsqueda', manejar: onLimpiarBusqueda }
+              : undefined
+          }
+        />
       ) : (
         Object.entries(categorias).map(([cat, sList]) => (
-          <div className="info-card" key={cat}>
+          <section className="info-card" key={cat}>
             <div className="card-header">
               <h3>{cat}</h3>
             </div>
@@ -66,7 +82,7 @@ export default function Paso2Sintomas({
                 ))}
               </div>
             </div>
-          </div>
+          </section>
         ))
       )}
 

@@ -9,7 +9,7 @@
     "dev": "vite"
   },
   "keywords": [],
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
     "@tanstack/react-query": "^5.104.0",
     "react": "^19.3.0",

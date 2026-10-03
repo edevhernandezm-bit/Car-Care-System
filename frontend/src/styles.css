@@ -1,26 +1,99 @@
 :root {
   color-scheme: light;
-  --bg: #eff2f6;
   --surface: #ffffff;
-  --surface-alt: #f7f9fc;
+  /* Superficie de la pagina: los dos topes del degradado, no un color plano.
+     Antes vivian como literales dentro de la regla body. */
+  --bg-top: #f5f7fb;
+  --bg-bottom: #e6ebf4;
+  /* Superficie hundida: bloques que se leen por debajo de una tarjeta. */
+  --surface-sunken: #f3f6fb;
   --text: #25303b;
   --muted: #667085;
+  /* Version del texto apagado con mas peso, para dato tabular o de lectura
+     larga. 7.9:1 sobre blanco, frente a 4.6:1 de --muted. */
+  --muted-strong: #475569;
   --primary: #3056d3;
+  --primary-hover: #2648b9;
   --primary-soft: #e3e7ff;
-  --success: #22c55e;
-  --warning: #f59e0b;
-  --danger: #ef4444;
+  /* Color de texto sobre un relleno --primary. 7.2:1. */
+  --on-primary: #ffffff;
+  /* No hay --success ni --warning. El verde y el ambar habituales (#22c55e y
+     #f59e0b) se quedan en 2.3:1 y 2.15:1 sobre blanco: inservibles como color
+     de texto. Cuando haga falta un estado positivo se declara con su propio
+     nombre y con un valor que si cumpla 4.5:1. */
+  --danger-text: #b00020;
+  /* Fondo del resumen de errores. El texto lo aporta --danger-text. */
+  --danger-surface: #fff8f8;
+  /* --border queda para separadores decorativos entre bloques de una tarjeta,
+     que la norma excluye del requisito de contraste. El borde de un campo de
+     formulario si es el limite del control y necesita 3:1 contra la superficie
+     (WCAG 1.4.11), asi que usa su propio token. */
   --border: #dde4ef;
-  --shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+  --border-control: #7f8fa6;
+  /* Insignias de urgencia: todas con texto blanco salvo "baja". Cada fondo se
+     eligio para alcanzar al menos 4.5:1 sobre su texto (WCAG 1.4.3); el ambar
+     anterior (#d97706) se quedaba en 3.19:1 y no cumplia. */
+  --urgencia-alta: #dc2626;
+  --urgencia-media: #b45309;
+  --urgencia-baja: #fde047;
+  --on-urgencia-baja: #422006;
+  /* Certeza del diagnostico. Son un eje distinto del de urgencia, asi que usan
+     su propia escala y no la comparten. Los tres pasan 4.5:1 sobre blanco para
+     poder usarse tambien como texto: #15803d 5.02:1, #b45309 5.02:1,
+     #64748b 4.76:1. */
+  --certeza-alta: #15803d;
+  --certeza-media: #b45309;
+  --certeza-baja: #64748b;
+  /* "Inter" figuraba en font-family pero no estaba cargado en ninguna parte:
+     no hay @import, ni <link> en index.html, ni archivo de fuente. El
+     navegador caia a system-ui en silencio y la fuente declarada nunca se
+     llegaba a pintar. Se declara una pila del sistema, que esta disponible en
+     cada equipo sin pedir nada por red (el taller puede estar sin internet). */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, sans-serif;
+  /* Pila monoespaciada. La usan los bloques de codigo y las cifras tabulares;
+     se declara aqui para que no quede colgando sin consumidor. */
+  --font-mono: ui-monospace, 'Cascadia Code', 'Segoe UI Mono', Consolas, monospace;
+  /* Escalera de elevacion. Antes un unico --shadow hacia todo, incluidos los
+     campos de formulario, donde la sombra se usaba como anillo y no como
+     elevacion: por eso --shadow-md no se aplica a ningun input. */
+  --shadow-md: 0 20px 50px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 -12px 28px rgba(15, 23, 42, 0.12);
+  /* Anillo de foco. Distinto del color del borde para que el foco se lea
+     incluso sobre un control que ya tiene borde propio. */
+  --focus-ring: #93a4ff;
+
+  /* Controles: fondo neutro compartido por el campo de busqueda y los botones
+     deshabilitados. */
+  --control-bg: #e2e8f0;
+  --control-bg-hover: #d3dbe7;
+  --on-control-disabled: #94a3b8;
+
+  /* Barra lateral: degradado y color de texto propios, porque vive sobre un
+     fondo oscuro y no puede reutilizar los tokens de superficie. El texto
+     apagado (#cbd5e1) marca 10.3:1 sobre --sidebar-to, y el fuerte 15.6:1. */
+  --sidebar-from: #151f35;
+  --sidebar-to: #1f2937;
+  --on-sidebar: #eef2ff;
+  --on-sidebar-muted: #cbd5e1;
+  --on-sidebar-strong: #ffffff;
+  --sidebar-icon-bg: #eef2ff;
+  --sidebar-icon-fg: #1f2937;
 
   --sidebar-w: 280px;
   --shell-pad-y: 32px;
   --shell-pad-x: 42px;
   --card-pad: 28px;
   --gap: 24px;
+  /* Escalera de radios: la tarjeta contiene al boton, y el boton al campo, asi
+     que el radio crece hacia afuera. Los tres valores siguientes son
+     excepciones con nombre, no peldanos intermedios de una escala. */
   --radius-card: 28px;
-  --radius-input: 14px;
   --radius-btn: 16px;
+  --radius-input: 14px;
+  --radius-search: 18px;
+  --radius-code: 8px;
+  --radius-pill: 9999px;
 }
 
 * {
@@ -36,8 +109,8 @@ body {
 body {
   min-height: 100vh;
   min-height: 100dvh;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  background: linear-gradient(180deg, #f5f7fb 0%, #e6ebf4 100%);
+  font-family: var(--font-sans);
+  background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
   color: var(--text);
   overflow-wrap: break-word;
 }
@@ -96,9 +169,36 @@ h4 {
   height: 100vh;
   height: 100dvh;
   padding: 32px 26px;
-  color: #eef2ff;
-  background: linear-gradient(180deg, #151f35 0%, #1f2937 100%);
+  color: var(--on-sidebar);
+  background: linear-gradient(180deg, var(--sidebar-from) 0%, var(--sidebar-to) 100%);
   border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Enlace de salto: el primer elemento enfocable de la pagina. Invisible en
+   reposo para no alterar el diseno, pero al recibir el foco con el teclado
+   aparece sobre la barra lateral y permite saltar la navegacion (WCAG 2.4.1). */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 12px;
+  z-index: 100;
+  padding: 12px 18px;
+  border-radius: var(--radius-btn);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-weight: 600;
+  text-decoration: none;
+  transition: top 0.2s ease;
+}
+
+.skip-link:focus {
+  top: 12px;
+}
+
+/* El contenedor del salto recibe el foco por script, asi que no debe dibujar
+   el anillo: el enlace ya dio la retroalimentacion visible al activarse. */
+#content-area:focus {
+  outline: none;
 }
 
 .brand {
@@ -114,20 +214,24 @@ h4 {
   place-items: center;
   width: 52px;
   height: 52px;
-  border-radius: 18px;
-  background: #eef2ff;
-  color: #1f2937;
-  font-weight: 700;
-  font-size: 1.35rem;
+  border-radius: var(--radius-search);
+  background: var(--sidebar-icon-bg);
+  color: var(--sidebar-icon-fg);
 }
 
-.brand h1 {
+.brand-icon svg {
+  width: 28px;
+  height: 28px;
+}
+
+.brand-name {
   margin: 0;
   font-size: 1.2rem;
+  font-weight: 700;
 }
 
 .brand span {
-  color: #cbd5e1;
+  color: var(--on-sidebar-muted);
   font-size: 0.9rem;
 }
 
@@ -141,7 +245,7 @@ h4 {
   text-align: left;
   border: none;
   background: transparent;
-  color: #cbd5e1;
+  color: var(--on-sidebar-muted);
   padding: 14px 18px;
   border-radius: var(--radius-btn);
   cursor: pointer;
@@ -150,17 +254,17 @@ h4 {
 }
 
 .menu-item:hover {
-  color: #fff;
+  color: var(--on-sidebar-strong);
   transform: translateX(2px);
 }
 
 .menu-item:focus-visible {
-  outline: 2px solid #93a4ff;
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
 .menu-item.active {
-  color: #fff;
+  color: var(--on-sidebar-strong);
   background: rgba(255, 255, 255, 0.1);
   box-shadow: inset 4px 0 0 var(--primary);
 }
@@ -168,7 +272,7 @@ h4 {
 .main-content {
   min-width: 0;
   padding: var(--shell-pad-y) var(--shell-pad-x);
-  background: #f3f6fb;
+  background: var(--surface-sunken);
 }
 
 .topbar {
@@ -214,7 +318,7 @@ h4 {
   height: 48px;
   border-radius: var(--radius-input);
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
   font-weight: 700;
 }
 
@@ -244,42 +348,40 @@ h4 {
   min-width: 0;
 }
 
+/* Un campo no tiene elevacion: dibuja una sombra hacia abajo, el navegador la
+  lee como "flota" y compite con la barra de resultados. La profundidad la
+  aportan las tarjetas que lo contienen. */
 .search-box input {
   width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 18px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-search);
   padding: 16px 52px 16px 18px;
   outline: none;
   background: var(--surface);
   color: var(--text);
-  box-shadow: var(--shadow);
 }
 
 .search-box input:focus-visible {
   border-color: var(--primary);
-  box-shadow: var(--shadow), 0 0 0 3px var(--primary-soft);
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
-.search-box button {
+/* Afordancia visual, no control: el filtro ya se aplica en cada tecla. */
+.search-icon {
   position: absolute;
-  right: 14px;
+  right: 18px;
   top: 50%;
   transform: translateY(-50%);
-  border: none;
-  background: rgba(48, 86, 211, 0.08);
-  color: var(--primary);
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-input);
-  cursor: pointer;
   display: grid;
   place-items: center;
-  transition: background 0.2s ease, transform 0.2s ease;
+  color: var(--muted);
+  pointer-events: none;
 }
 
-.search-box button:hover {
-  background: rgba(48, 86, 211, 0.16);
-  transform: translateY(-50%) scale(1.02);
+.search-icon svg {
+  width: 20px;
+  height: 20px;
 }
 
 .primary-btn,
@@ -294,35 +396,38 @@ h4 {
 
 .primary-btn {
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .primary-btn:hover {
-  background: #2648b9;
+  background: var(--primary-hover);
 }
 
 .secondary-btn {
-  background: #e2e8f0;
+  background: var(--control-bg);
   color: var(--text);
 }
 
 .secondary-btn:hover {
-  background: #d3dbe7;
+  background: var(--control-bg-hover);
 }
 
+/* Deshabilitado: el texto usa --on-control-disabled porque 2.6:1 no alcanza
+  para 4.5:1. El bajo contraste es intencional, la senal la da la opacidad del
+  contenedor mas el cursor y el atributo disabled. */
 .primary-btn:disabled,
 .secondary-btn:disabled {
-  background: #e2e8f0;
-  color: #94a3b8;
+  background: var(--control-bg);
+  color: var(--on-control-disabled);
   cursor: not-allowed;
 }
 
 .primary-btn:disabled:hover {
-  background: #e2e8f0;
+  background: var(--control-bg);
 }
 
 .secondary-btn:disabled:hover {
-  background: #e2e8f0;
+  background: var(--control-bg);
 }
 
 .primary-btn:focus-visible,
@@ -335,7 +440,7 @@ h4 {
   background: var(--surface);
   border-radius: var(--radius-card);
   padding: var(--card-pad);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-md);
 }
 
 .form-grid {
@@ -344,7 +449,7 @@ h4 {
 }
 
 .form-grid--vehicle {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .form-grid--flush {
@@ -364,17 +469,89 @@ h4 {
 .form-grid textarea {
   width: 100%;
   min-width: 0;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius-input);
   padding: 14px 16px;
-  background: #fff;
+  background: var(--surface);
   color: var(--text);
 }
 
-.form-grid input:focus-visible {
+.form-grid select {
+  cursor: pointer;
+}
+
+.form-grid input:focus-visible,
+.form-grid select:focus-visible {
   outline: none;
   border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+/* Ayuda contextual bajo un campo.Va enlazada con aria-describedby para que un
+   lector de pantalla la anuncie junto al control, no solo al verla. */
+.field-hint {
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--muted);
+  font-weight: 400;
+  text-wrap: pretty;
+}
+
+.field-hint strong {
+  color: var(--text);
+}
+
+/* Error junto al campo: se enlaza con aria-describedby para que el lector de
+   pantalla lo anuncie al enfocarlo, no solo cuando se ve. */
+.field-error {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  font-weight: 500;
+  color: var(--danger-text);
+}
+
+.form-grid input[aria-invalid='true'],
+.form-grid select[aria-invalid='true'] {
+  border-color: var(--danger-text);
+  background: var(--danger-surface);
+}
+
+.form-grid input[aria-invalid='true']:focus-visible,
+.form-grid select[aria-invalid='true']:focus-visible {
+  border-color: var(--danger-text);
+  box-shadow: 0 0 0 3px rgba(176, 0, 32, 0.16);
+}
+
+/* Resumen de errores: aparece arriba del formulario y recibe el foco tras un
+   envio fallido. El borde grueso mantiene visible su posicion aunque el foco
+   se dibuje solo con contorno (WCAG 3.3.1). */
+.error-summary {
+  padding: 14px 18px;
+  border: 1px solid var(--danger-text);
+  border-left-width: 5px;
+  border-radius: var(--radius-input);
+  background: var(--danger-surface);
+}
+
+.error-summary:focus-visible {
+  outline: 2px solid var(--danger-text);
+  outline-offset: 2px;
+}
+
+.error-summary-title {
+  margin: 0 0 6px;
+  font-weight: 700;
+  color: var(--danger-text);
+}
+
+.error-summary ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.error-summary a {
+  color: var(--danger-text);
 }
 
 .form-actions {
@@ -399,7 +576,7 @@ h4 {
   background: var(--surface);
   padding: var(--card-pad);
   border-radius: var(--radius-card);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-md);
 }
 
 .card-header {
@@ -424,37 +601,40 @@ h4 {
 }
 
 .card-category {
-  color: #475569;
+  color: var(--muted-strong);
   margin: 0 0 8px;
   font-size: 0.9rem;
 }
 
+/* Insignia: el color de texto por defecto es --on-primary y cada variante de
+   urgencia lo sobreescribe. "baja" usa su propio par texto/fondo porque el
+   amarillo claro no admite texto blanco. */
 .badge {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--on-primary);
   padding: 8px 16px;
-  border-radius: 9999px;
+  border-radius: var(--radius-pill);
   font-size: 0.9rem;
   font-weight: 600;
   white-space: nowrap;
 }
 
 .badge.high {
-  background: #dc2626;
-  color: #ffffff;
+  background: var(--urgencia-alta);
+  color: var(--on-primary);
 }
 
 .badge.medium {
-  background: #d97706;
-  color: #ffffff;
+  background: var(--urgencia-media);
+  color: var(--on-primary);
 }
 
 .badge.low {
-  background: #fde047;
-  color: #422006;
+  background: var(--urgencia-baja);
+  color: var(--on-urgencia-baja);
 }
 
 .card-body {
@@ -517,6 +697,13 @@ h4 {
   gap: 8px;
 }
 
+/* La barra de analisis queda fija abajo. Sin este margen, al tabular por la
+   lista el navegador desplaza cada checkbox hasta esconderlo justo detras de
+   la barra (WCAG 2.4.11). El margen reserva el alto aproximado de la barra. */
+.sintomas-checklist .checkbox-item {
+  scroll-margin-bottom: 120px;
+}
+
 .analysis-bar {
   position: sticky;
   bottom: 0;
@@ -531,7 +718,9 @@ h4 {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  box-shadow: var(--shadow);
+  /* Sombra propia, mas densa que la de las tarjetas: esta barra flota sobre el
+     contenido y necesita separarse de el, no solo distinguirse. */
+  box-shadow: var(--shadow-lg);
 }
 
 .analysis-bar-count {
@@ -573,12 +762,13 @@ h4 {
 .code-block {
   margin: 8px 0 0;
   padding: 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-code);
   background: var(--surface);
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 0.85rem;
+  font-family: var(--font-mono);
 }
 
 .text-muted {
@@ -589,8 +779,11 @@ h4 {
   color: var(--primary);
 }
 
+/* El rojo de estado habitual (#ef4444) marcaba 3.76:1 sobre blanco: suficiente
+   para superficies y bordes, insuficiente para texto (WCAG 1.4.3). El texto de
+   error usa --danger-text, un rojo mas oscuro a 7.3:1. */
 .text-danger {
-  color: #b00020;
+  color: var(--danger-text);
 }
 
 .diagnostico-container {
@@ -598,6 +791,272 @@ h4 {
   flex-direction: column;
   gap: var(--gap);
   min-width: 0;
+}
+
+/* Contenedor de resultados: antes era una .info-card que envolvia a otras
+   .info-card. Anidar superficies marca un nivel de profundidad que no existe y
+   ademas gasta sombra y padding, asi que el contenedor queda sin marco. */
+.results-panel {
+  min-width: 0;
+  padding: var(--card-pad);
+  background: var(--surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-md);
+}
+
+/* Barra de certeza. La pista es aria-hidden y el valor vive en texto al lado:
+   un grafico de color no comunica nada a quien no lo ve. Las marcas fijas
+   señalan los dos cortes del motor para que se vea cuanto falta para subir de
+   nivel. */
+.certainty {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.certainty-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.certainty-title {
+  color: var(--muted-strong);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.certainty-value {
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.certainty-value--alta {
+  color: var(--certeza-alta);
+}
+
+.certainty-value--media {
+  color: var(--certeza-media);
+}
+
+.certainty-value--baja,
+.certainty-value--desconocida {
+  color: var(--certeza-baja);
+}
+
+.certainty-track {
+  position: relative;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+
+.certainty-fill {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  border-radius: var(--radius-pill);
+}
+
+.certainty-fill--alta {
+  background: var(--certeza-alta);
+}
+
+.certainty-fill--media {
+  background: var(--certeza-media);
+}
+
+.certainty-fill--baja {
+  background: var(--certeza-baja);
+}
+
+/* Las marcas van sobre el relleno: si no, desaparecen en cuanto la certeza pasa
+   el corte, que es justo cuando masuseful es verlos. */
+.certainty-tick {
+  position: absolute;
+  inset-block: 0;
+  width: 2px;
+  background: var(--surface);
+  opacity: 0.9;
+}
+
+.certainty-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Bloque de costo: el rango y la nota de conversion estaban en el mismo
+   parrafo, asi que el dato mas util quedaba al final de una linea larga. */
+.cost-amount {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Desplegable nativo: summary aporta el estado abierto/cerrado y la
+   navegacion por teclado sin codigo propio (WCAG 4.1.2). */
+.why {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.why-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  color: var(--muted-strong);
+  font-size: 0.9rem;
+  font-weight: 600;
+  list-style-position: inside;
+}
+
+.why-summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.why-count {
+  color: var(--muted);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.why-body {
+  padding-top: 10px;
+}
+
+.why-note {
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+
+.why-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: var(--text);
+  display: grid;
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+/* Chips de procedencia: contorno en lugar de relleno solido. Deliberado, para
+   que no se confundan con las insignias de urgencia, que si van rellenas. */
+.why--source {
+  border-top: none;
+  padding-top: 0;
+}
+
+.confianza-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.confianza-alta {
+  border-color: var(--certeza-alta);
+  color: var(--certeza-alta);
+}
+
+.confianza-media {
+  border-color: var(--certeza-media);
+  color: var(--certeza-media);
+}
+
+.confianza-baja,
+.confianza-none {
+  border-color: var(--border-control);
+  color: var(--muted-strong);
+}
+
+/* Estado vacio: dice por que esta vacio y ofrece la salida. */
+.empty-state {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+  padding: 8px 0;
+}
+
+.empty-state h4 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.empty-state p {
+  margin: 0;
+  max-width: 62ch;
+  color: var(--muted-strong);
+  line-height: 1.65;
+}
+
+/* Esqueleto de carga. aria-hidden en las barras: role=status del contenedor ya
+   anuncia la operacion, y el textosr-only da el mensaje una sola vez. */
+.skeleton-group {
+  display: grid;
+  gap: 16px;
+}
+
+.skeleton-card {
+  display: grid;
+  gap: 10px;
+  padding: 20px;
+  background: var(--surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-md);
+}
+
+.skeleton-line {
+  height: 12px;
+  border-radius: var(--radius-pill);
+  background: var(--control-bg);
+}
+
+.skeleton-line--title {
+  height: 18px;
+  width: 55%;
+}
+
+.skeleton-line--short {
+  width: 30%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton-line {
+    animation: skeleton-pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes skeleton-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+
+    50% {
+      opacity: 0.45;
+    }
+  }
 }
 
 @media (max-width: 1200px) {
@@ -648,6 +1107,16 @@ h4 {
     font-size: 0.95rem;
   }
 
+  /* El indicador de "donde estoy" era una franja pegada al borde izquierdo, que
+     solo tiene sentido en la columna vertical. En la fila horizontal quedaba
+     como un guion suelto al inicio de la pastilla, asi que se pasa a un borde
+     inferior, que es la direccion en la que se leen los items. */
+  .menu-item.active {
+    box-shadow: none;
+    border-bottom: 3px solid var(--primary);
+    border-radius: var(--radius-btn) var(--radius-btn) 0 0;
+  }
+
   .page-intro {
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
@@ -676,11 +1145,16 @@ h4 {
   .brand-icon {
     width: 42px;
     height: 42px;
-    border-radius: 14px;
-    font-size: 1.1rem;
+    border-radius: var(--radius-input);
   }
 
-  .brand h1 {
+  /* El icono ya no es un emoji: su tamano lo fija el SVG, no font-size. */
+  .brand-icon svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .brand-name {
     font-size: 1.05rem;
   }
 
@@ -760,9 +1234,26 @@ h4 {
     padding: 12px 44px 12px 14px;
   }
 
-  .search-box button {
-    right: 10px;
-    width: 36px;
-    height: 36px;
+  .search-icon {
+    right: 12px;
+  }
+
+  .search-icon svg {
+    width: 18px;
+    height: 18px;
+  }
+}
+
+/* La app anima transiciones en botones, campos y el enlace de salto. Con la
+   preferencia de movimiento reducido activada, esas transiciones se desactivan
+   en lugar de solo acortarse (WCAG 2.3.3). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
