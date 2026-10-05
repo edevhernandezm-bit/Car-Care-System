@@ -7,6 +7,7 @@ import {
   convertirCosto,
   etiquetaConfianzaDato,
   etiquetaUrgencia,
+  LEYENDA_CONFIANZA,
   procedenciaFalla,
   tasaEsEstimada,
   urgenciaClase,
@@ -45,8 +46,45 @@ export default function BaseConocimiento({ fallasCatalogo, searchQuery, onLimpia
     );
   }
 
+  // Lo que dice cada chip se cuenta sobre el catalogo que llego, no sobre una
+  // constante escrita a mano: si el motor agrega una falla con `baja` o cambia
+  // una fuente, el numero de la leyenda sigue siendo el cierto.
+  const procedencia = fallasCatalogo.map((f) => procedenciaFalla(f).confianza);
+  const sinFuente = procedencia.filter((c) => !c).length;
+
   return (
-    <div className="knowledge-grid">
+    <>
+      <section className="info-card confianza-leyenda">
+        <div className="card-body">
+          <p className="card-category">Cómo leer esta sección</p>
+          <h3 className="confianza-leyenda-titulo">Procedencia de cada falla</h3>
+          <p className="text-muted">
+            La procedencia dice cuánto pesa la investigación que respalda la falla. No es la
+            certeza del diagnóstico: esa depende de los síntomas que confirmes y la calcula el
+            motor.
+          </p>
+          <dl className="confianza-leyenda-lista">
+            {LEYENDA_CONFIANZA.map((n) => (
+              <div className="confianza-leyenda-fila" key={n.etiqueta}>
+                <dt>
+                  <span className={`confianza-chip ${claseConfianzaDato(n.confianza)}`}>
+                    {n.etiqueta}
+                  </span>
+                </dt>
+                <dd>
+                  {n.detalle}
+                  <span className="confianza-leyenda-conteo">
+                    {n.confianza
+                      ? `${procedencia.filter((c) => c === n.confianza).length} fallas`
+                      : `${sinFuente} fallas`}
+                  </span>
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      </section>
+      <div className="knowledge-grid">
       {filtradas.map((f) => {
         const urgencia = etiquetaUrgencia(f.urgencia);
         const proc = procedenciaFalla(f);
@@ -70,27 +108,33 @@ export default function BaseConocimiento({ fallasCatalogo, searchQuery, onLimpia
               </div>
               {/* Procedencia del dato. Es un eje distinto de la certeza del
                   diagnostico: en el catalogo no hay sintomas que el usuario haya
-                  confirmado, asi que se declara el peso de la investigacion. */}
-              {proc.confianza && (
-                <details className="why why--source">
-                  <summary className="why-summary">
-                    Procedencia del dato
-                    <span className={`confianza-chip ${claseConfianzaDato(proc.confianza)}`}>
-                      {etiquetaConfianzaDato(proc.confianza)}
-                    </span>
-                  </summary>
-                  <div className="why-body">
-                    {proc.hayFuente ? (
-                      <p className="why-note">{proc.fuente}</p>
-                    ) : (
-                      <p className="why-note">
-                        Esta falla viene de la base original del sistema y no tiene fuente
-                        registrada.
-                      </p>
-                    )}
-                  </div>
-                </details>
-              )}
+                  confirmado, asi que se declara el peso de la investigacion.
+
+                  El bloque se pinta siempre, sin condicion: 20 de las 54 fallas
+                  vienen de la base original, sin una fuente de investigacion
+                  formal. Antes se ocultaban tras `proc.confianza &&`, y esas
+                  20 no mostraban nada, que es justo lo que la leyenda de arriba
+                  tiene que explicar. */}
+              <details className="why why--source">
+                <summary className="why-summary">
+                  Procedencia del dato
+                  <span className={`confianza-chip ${claseConfianzaDato(proc.confianza)}`}>
+                    {etiquetaConfianzaDato(proc.confianza)}
+                  </span>
+                </summary>
+                <div className="why-body">
+                  {proc.hayFuente ? (
+                    <p className="why-note">{proc.fuente}</p>
+                  ) : (
+                    <p className="why-note">
+                      Proviene de la base original del sistema: información obtenida de foros de
+                      mecánica como iFixit, y de referencias técnicas como los manuales Chilton y
+                      Haynes o los códigos de diagnóstico OBD-II. La falla es válida, pero no está
+                      respaldada por una investigación formal.
+                    </p>
+                  )}
+                </div>
+              </details>
               <div className="card-footer">
                 <span>Costo</span>
                 <strong>
@@ -124,6 +168,7 @@ export default function BaseConocimiento({ fallasCatalogo, searchQuery, onLimpia
           </article>
         );
       })}
-    </div>
+      </div>
+    </>
   );
 }

@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { unirPorFalla, distribuirPorCerteza, topFallas } from './estadisticas.js';
+import {
+  unirPorFalla,
+  distribuirPorCerteza,
+  filtrarPorBusqueda,
+  topFallas,
+} from './estadisticas.js';
 
 // El catálogo real trae la urgencia como slug; urgencyClase() espera la
 // etiqueta. Estos dos casos son los que fallaban cuando se pasaba el slug.
@@ -41,10 +46,23 @@ test('unirPorFalla: compone la etiqueta antes de clasificar la urgencia', () => 
 test('unirPorFalla: una falla fuera del catálogo conserva el id y no inventa urgencia', () => {
   const [fila] = unirPorFalla([{ falla: 'falla_nueva_2026', veces: 1, certeza_promedio: 0.5 }], CATALOGO);
 
-  assert.equal(fila.nombre, 'falla_nueva_2026', 'el id es lo único cierto que hay');
+  // El nombre sale del id con los guiones bajos cambiados por espacios, igual
+  // que hace mapearProlog(). Antes esta fila devolvía el id tal cual y en
+  // pantalla se leían "falla_nueva_2026" y "Aceite de motor bajo" en la misma
+  // columna, según la fila.
+  assert.equal(fila.nombre, 'falla nueva 2026', 'el id des-eslugificado es lo único cierto que hay');
+  assert.equal(fila.id, 'falla_nueva_2026', 'el id crudo se conserva aparte');
   assert.equal(fila.enCatalogo, false);
   assert.equal(fila.urgencia, null);
   assert.equal(fila.clase, 'sin-urgencia', 'sin catálogo no se inventa una clase de urgencia');
+});
+
+test('unirPorFalla: el nombre sale del catálogo cuando lo conoce, no del id', () => {
+  // La contraparte del caso anterior: cuando el catálogo sí tiene la falla, su
+  // nombre manda. El id solo se usa para buscar.
+  const [fila] = unirPorFalla([{ falla: 'correa_distribucion', veces: 1 }], CATALOGO);
+  assert.equal(fila.nombre, 'Correa de distribución');
+  assert.equal(fila.enCatalogo, true);
 });
 
 test('unirPorFalla: separa la certeza ausente del cero real', () => {
@@ -143,4 +161,65 @@ test('topFallas: no declara recorte cuando caben todas', () => {
   assert.equal(top.length, 2);
   assert.equal(total, 2);
   assert.equal(recortadas, false);
+});
+
+// La búsqueda de Estadísticas. Filtra las filas del historial por nombre y
+// urgencia; los contadores de arriba no se tocan.
+const HISTORIAL = unirPorFalla(
+  [
+    { falla: 'aceite_motor_bajo', veces: 5, certeza_promedio: 0.91 },
+    { falla: 'pastillas_freno', veces: 4, certeza_promedio: 0.88 },
+    { falla: 'correa_distribucion', veces: 3, certeza_promedio: 0.66 },
+    { falla: 'vidrio_trasero', veces: 2, certeza_promedio: 0.42 },
+    { falla: 'falla_nueva_2026', veces: 1, certeza_promedio: 0.5 },
+  ],
+  CATALOGO
+);
+
+test('filtrarPorBusqueda: una consulta vacía devuelve las filas sin tocar', () => {
+  assert.equal(filtrarPorBusqueda(HISTORIAL, '').length, HISTORIAL.length);
+  assert.equal(filtrarPorBusqueda(HISTORIAL, '   ').length, HISTORIAL.length);
+});
+
+test('filtrarPorBusqueda: busca por nombre de falla', () => {
+  const r = filtrarPorBusqueda(HISTORIAL, 'freno');
+  assert.deepEqual(r.map((f) => f.id), ['pastillas_freno']);
+});
+
+test('filtrarPorBusqueda: busca por urgencia, con y sin tilde', () => {
+  // La urgencia se expone como etiqueta ("Crítica"), no como el slug del
+  // catálogo ("critica"). Un usuario escribe "critica" sin tilde y tiene que
+  // encontrar las misma fila que con "crítica".
+  assert.deepEqual(filtrarPorBusqueda(HISTORIAL, 'Crítica').map((f) => f.id), ['aceite_motor_bajo']);
+  assert.deepEqual(filtrarPorBusqueda(HISTORIAL, 'critica').map((f) => f.id), ['aceite_motor_bajo']);
+});
+
+test('filtrarPorBusqueda: encuentra ids fuera del catálogo', () => {
+  // El nombre de esa fila viene del id des-eslugificado, así que "2026" la
+  // encuentra sin que nadie tenga que haberle puesto nombre.
+  assert.deepEqual(filtrarPorBusqueda(HISTORIAL, '2026').map((f) => f.id), ['falla_nueva_2026']);
+});
+
+test('filtrarPorBusqueda: con varias palabras exige que esten todas', () => {
+  assert.equal(filtrarPorBusqueda(HISTORIAL, 'distribucion correa').length, 1);
+  assert.equal(filtrarPorBusqueda(HISTORIAL, 'correa freno').length, 0, 'están en filas distintas');
+});
+
+test('filtrarPorBusqueda: sin coincidencias devuelve lista vacía, no las filas', () => {
+  assert.deepEqual(filtrarPorBusqueda(HISTORIAL, 'alternador'), []);
+});
+
+test('filtrarPorBusqueda: filtra antes del recorte para no perder una falla del final', () => {
+  // El orden importa: si se recortara a 12 primero, "vidrio_trasero" (puesto 4
+  // de 5 aquí) sobreviviría, pero con el catálogo real una falla rara que no
+  // entra al top se perdería aunque su nombre coincida con la búsqueda.
+  const { filas, total } = topFallas(filtrarPorBusqueda(HISTORIAL, 'vidrio'));
+  assert.deepEqual(filas.map((f) => f.id), ['vidrio_trasero']);
+  assert.equal(total, 1, 'el total es del subconjunto filtrado, no de las 54 del historial');
+});
+
+test('filtrarPorBusqueda: tolera basura de entrada sin lanzar', () => {
+  assert.deepEqual(filtrarPorBusqueda(null, 'freno'), []);
+  assert.deepEqual(filtrarPorBusqueda('nope', 'freno'), []);
+  assert.deepEqual(filtrarPorBusqueda(HISTORIAL, null).length, HISTORIAL.length, 'ausente no es filtro');
 });

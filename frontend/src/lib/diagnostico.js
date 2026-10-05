@@ -35,6 +35,11 @@ function normalizar(texto) {
 // medio. Una consulta vacía devuelve true para no dejar la lista en blanco
 // mientras el usuario ni ha escrito nada.
 export function coincide(haystack, consulta) {
+  // Una consulta ausente o nula no es un filtro, es "no se está buscando".
+  // Sin esto, normalizar() hace String(null) → "null", el token no queda vacío
+  // y la función comparaba el texto contra la palabra "null": cero coincidencias
+  // en vez de todas las filas. El mismo razonamiento que tokens.length === 0.
+  if (consulta === null || consulta === undefined) return true;
   const tokens = normalizar(consulta).split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return true;
   const h = normalizar(haystack);
@@ -62,12 +67,18 @@ export function certezaNivel(c) {
   return 'baja';
 }
 
-export function etiquetaCerteza(c) {
-  const nivel = certezaNivel(c);
-  if (nivel === 'desconocida') return 'No disponible';
+// Unico lugar donde el nombre de un corte se decide. etiquetaCerteza lo usa
+// para una lectura suelta y distribuirPorCerteza para un bucket, asi que los
+// dos caminos pintan exactamente la misma palabra.
+export function etiquetaNivel(nivel) {
+  if (nivel === 'desconocida') return 'Sin dato';
   if (nivel === 'alta') return 'Alta';
   if (nivel === 'media') return 'Media';
   return 'Baja';
+}
+
+export function etiquetaCerteza(c) {
+  return etiquetaNivel(certezaNivel(c));
 }
 
 export function certezaPorcentaje(c) {
@@ -93,15 +104,55 @@ export function procedenciaFalla(f) {
   };
 }
 
+// La etiqueta que cae en `default` no es "no hay dato": el motor ya responde
+// `no_registrada` por defecto (motor_inferencia.pl:1357) y `procedenciaFalla` lo
+// convierte en ''. Las 20 fallas de la base original sí tienen procedencia
+// conocida —foros de mecánica, manuales de referencia y códigos OBD-II, no una
+// investigación formal— así que se nombra esa situación en vez de dejar la
+// tarjeta sin nada que decir. El chip va corto porque no cabe ni en la columna
+// de la leyenda ni en una tarjeta de la rejilla; de dónde viene exactamente lo
+// cuenta el `detalle` de la leyenda y la nota del desplegable.
 export function etiquetaConfianzaDato(c) {
   switch (c) {
     case 'alta': return 'Investigación verificada';
     case 'alta_costo_estimado': return 'Falla verificada, costo estimado';
     case 'media': return 'Investigación parcial';
     case 'baja': return 'Investigación limitada';
-    default: return 'Procedencia no registrada';
+    default: return 'Conocimiento de foros de mecánica';
   }
 }
+
+// La simbologia que explica la section de Fallas Comunes. Vive en lib y no en
+// el componente para que quede bajo node --test, igual que el resto de las
+// funciones puras de la vista.
+//
+// Solo aparecen los tres niveles que el motor declara hoy: `baja` no se lista
+// porque no hay ninguna falla con ese valor en el catalogo, y prometerlo en una
+// leyenda seria una etiqueta que nadie va a ver. Si se agrega una falla `baja`
+// al motor, esta lista es la que hay que actualizar.
+export const LEYENDA_CONFIANZA = [
+  {
+    confianza: 'alta',
+    etiqueta: 'Investigación verificada',
+    detalle: 'La falla está respaldada por boletines, reportes de propietarios o datos del fabricante.',
+  },
+  {
+    confianza: 'alta_costo_estimado',
+    etiqueta: 'Falla verificada, costo estimado',
+    detalle: 'La falla está confirmada, pero el costo es un estimado de mercado, no una cifra oficial.',
+  },
+  {
+    confianza: 'media',
+    etiqueta: 'Investigación parcial',
+    detalle: 'La falla es plausible y hay indicios, pero no está confirmada de forma directa.',
+  },
+  {
+    confianza: '',
+    etiqueta: 'Conocimiento de foros de mecánica',
+    detalle:
+      'Proviene de la base original del sistema: información obtenida de foros de mecánica como iFixit, y de referencias técnicas como los manuales Chilton y Haynes o los códigos de diagnóstico OBD-II. La falla es válida, pero no está respaldada por una investigación formal.',
+  },
+];
 
 export function claseConfianzaDato(c) {
   if (c === 'alta' || c === 'alta_costo_estimado') return 'confianza-alta';
@@ -120,11 +171,25 @@ export function etiquetaAnio(a) {
   return Number(a) > 0 ? String(a) : 'año desconocido';
 }
 
+// Como se muestra una falla cuando el catalogo la conoce y cuando no. Vive aqui
+// porque hay dos consumers (mapearProlog y unirPorFalla) y ya divergieron una vez:
+// uno des-eslugificaba el id y el otro lo devolvia crudo, asi que en las graficas
+// unas fallas aparecian como "Sistema de frenos con aire" y otras como
+// "sistema_frenos_con_aire". Un solo lugar, las dos quedan iguales.
+//
+// Cuando el catalogo no conoce la falla, los guiones bajos se cambian por
+// espacios: no es inventar un nombre, es leer el id. `unirPorFalla` conserva el
+// id aparte y marca `enCatalogo: false` para que la vista diga que esa fila no
+// tiene nombre propio.
+export function nombreDeFalla(id, base) {
+  return base ? base.nombre : String(id).replace(/_/g, ' ');
+}
+
 export function mapearProlog(f, catalogoFallas) {
   const base = catalogoFallas.find((x) => x.id === f.id);
   return {
     id: f.id,
-    nombre: base ? base.nombre : f.id.replace(/_/g, ' '),
+    nombre: nombreDeFalla(f.id, base),
     urgencia: etiquetaUrgencia(f.urgencia || base?.urgencia),
     // La moneda determina si el costo se convierte o ya está en MXN. Sin
     // propagarla, el historial guardaría '' y el equivalente en pesos nunca

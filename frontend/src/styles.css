@@ -1225,7 +1225,10 @@ h4 {
   color: var(--muted-strong);
   font-size: 0.75rem;
   font-weight: 500;
-  white-space: nowrap;
+  /* Sin nowrap a proposito: la etiqueta larga de procedencia no cabe en la
+     columna del <dt> (240px) ni en el ancho de una tarjeta de la rejilla
+     (224px de contenido), y con nowrap se derramaba sobre el texto de al lado
+     en vez de bajar a dos lineas. */
 }
 
 .confianza-alta {
@@ -1242,6 +1245,53 @@ h4 {
 .confianza-none {
   border-color: var(--border-control);
   color: var(--muted-strong);
+}
+
+/* Leyenda de procedencia. Va antes de la rejilla de fallas porque explica los
+   chips que despues aparecen en cada tarjeta. El termino va en <dt> y la
+   explicacion en <dd>: es una lista de definiciones, no cuatro parrafos, y asi
+   un lector de pantalla anuncia "Investigación verificada" junto a lo que
+   significa en vez de repetir la lista suelta. */
+.confianza-leyenda {
+  margin-bottom: 20px;
+}
+
+.confianza-leyenda-titulo {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+}
+
+.confianza-leyenda-lista {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 0;
+}
+
+.confianza-leyenda-fila {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  gap: 4px 16px;
+  align-items: baseline;
+}
+
+.confianza-leyenda-fila dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.confianza-leyenda-conteo {
+  display: block;
+  color: var(--muted-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+/* En pantallas angostas el chip se apila sobre su explicacion: en dos columnas
+   el texto se quedaria en unos 150px y habria que cortarlo. */
+@media (max-width: 700px) {
+  .confianza-leyenda-fila {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* Estado vacio: dice por que esta vacio y ofrece la salida. */
@@ -1622,6 +1672,27 @@ h4 {
 
 .stats-top-name {
   font-weight: 600;
+}
+
+/* Marca de fila: el id guardado no existe en el catalogo, asi que no hay
+   nombre propio que mostrar. Mismo idioma visual que .confianza-chip (borde
+   tenue, texto --muted-strong) y a menor escala porque convive con el nombre
+   en la misma linea. Lleva texto, no solo color, para que se lea sin
+   distinguirlo. No reutiliza .badge: esa insignia es de tarjeta y con
+   padding de 8px 16px partiria el nombre en dos lineas. */
+.stats-mark {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: 0.72rem;
+  font-weight: 500;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .stats-top-meta {

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import BaseConocimiento from './components/BaseConocimiento.jsx';
 import EstadisticasCerteza from './components/EstadisticasCerteza.jsx';
@@ -96,6 +96,24 @@ export default function App() {
   const peticionRef = useRef(0);
   const { catalogos, status } = useCatalogosIngeniero();
   const seccion = SECCIONES.find((s) => s.id === section) ?? SECCIONES[0];
+
+  // La barra de búsqueda solo se pinta donde de verdad filtra. El buscador es
+  // global, pero cada pantalla consume la consulta o no: Fallas Comunes,
+  // Síntomas y Estadísticas la reciben como prop, y Registro del vehículo y
+  // Resultados no la leen. Mostrarla igual era un control mudo — y un lector de
+  // pantalla anunciaba un buscador que no filtraba nada.
+  const mostrarBusqueda =
+    section === 'base-conocimiento' ||
+    section === 'estadisticas' ||
+    (section === 'diagnostico' && Boolean(vehiculoActual) && vista === 'cuestionario');
+
+  // Y hay que borrar lo que quedara escrito: sin esto, buscar "cvt" en Fallas
+  // Comunes y pasar a Registro del vehículo la deja guardada, y al volver
+  // aparece filtrada sin que nadie lo haya escrito ahí. El mismo control mudo,
+  // del otro lado.
+  useEffect(() => {
+    if (!mostrarBusqueda) setSearchQuery('');
+  }, [mostrarBusqueda]);
 
   const registrarVehiculo = (vehiculo) => {
     setVehiculoActual(vehiculo);
@@ -234,29 +252,31 @@ export default function App() {
               <h2 id="section-title">{seccion.titulo}</h2>
               <p className="section-subtitle">{seccion.subtitulo}</p>
             </div>
-            <div className="search-box">
-              <label className="sr-only" htmlFor="busquedaGlobal">
-                Buscar por falla, categoría o síntoma
-              </label>
-              <input
-                id="busquedaGlobal"
-                type="search"
-                value={searchQuery}
-                /* Aqui no se normaliza nada. El input es controlado, asi que un
-                   trim() en cada tecla se comia el espacio que el usuario acababa
-                   de escribir y la siguiente letra se pegaba a la anterior:
-                   "pastillas freno" nunca existio. La normalizacion (minusculas,
-                   tildes, tokens) vive en coincide(), en lib/diagnostico.js. */
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Buscar por falla, categoría o síntoma..."
-              />
-              {/* El filtro se aplica en cada tecla, asi que un boton "Buscar" no
-                  hacia nada: anunciaba una accion que no ocurria. La lupa queda
-                  como afordancia visual, no como control. */}
-              <span className="search-icon">
-                <IconoLupa />
-              </span>
-            </div>
+            {mostrarBusqueda && (
+              <div className="search-box">
+                <label className="sr-only" htmlFor="busquedaGlobal">
+                  Buscar por falla, categoría o síntoma
+                </label>
+                <input
+                  id="busquedaGlobal"
+                  type="search"
+                  value={searchQuery}
+                  /* Aqui no se normaliza nada. El input es controlado, asi que un
+                     trim() en cada tecla se comia el espacio que el usuario acababa
+                     de escribir y la siguiente letra se pegaba a la anterior:
+                     "pastillas freno" nunca existio. La normalizacion (minusculas,
+                     tildes, tokens) vive en coincide(), en lib/diagnostico.js. */
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Buscar por falla, categoría o síntoma..."
+                />
+                {/* El filtro se aplica en cada tecla, asi que un boton "Buscar" no
+                    hacia nada: anunciaba una accion que no ocurria. La lupa queda
+                    como afordancia visual, no como control. */}
+                <span className="search-icon">
+                  <IconoLupa />
+                </span>
+              </div>
+            )}
           </section>
 
           <section id="content-area" className="content-area" tabIndex={-1}>
@@ -270,7 +290,11 @@ export default function App() {
               />
             )}
             {section === 'estadisticas' && (
-              <EstadisticasCerteza fallasCatalogo={catalogos.fallas} />
+              <EstadisticasCerteza
+                fallasCatalogo={catalogos.fallas}
+                searchQuery={searchQuery}
+                onLimpiarBusqueda={() => setSearchQuery('')}
+              />
             )}
           </section>
         </main>

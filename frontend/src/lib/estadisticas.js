@@ -8,11 +8,12 @@
 //   GET /api/diagnosticos   -> últimos 100 documentos, del más nuevo al viejo
 //
 // por_falla trae el id de la falla, no su nombre. Se une contra el catálogo de
-// Prolog con la misma lógica que mapearProlog() en diagnostico.js: el catálogo
-// manda, y si no conoce la falla se muestra el id crudo en vez de inventar un
-// nombre.
+// Prolog con la misma lógica que mapearProlog() en diagnostico.js —compartiendo
+// su helper nombreDeFalla(), no dos copias—: el catálogo manda, y si no conoce
+// la falla se lee el id con los guiones bajos cambiados por espacios en vez de
+// inventar un nombre.
 
-import { certezaNivel, etiquetaUrgencia, urgenciaClase } from './diagnostico.js';
+import { certezaNivel, coincide, etiquetaNivel, etiquetaUrgencia, nombreDeFalla, urgenciaClase } from './diagnostico.js';
 
 // Sin número no hay promedio que dibujar. El backend agrupa por falla, así que
 // un bucket vacío es un dato roto, no un cero real: se marca desconocido para
@@ -41,8 +42,11 @@ export function unirPorFalla(porFalla, fallasCatalogo = []) {
 
       return {
         id: fila.falla,
-        // Si el catálogo no la conoce, el id es lo único cierto que hay.
-        nombre: enCatalogo ? enCatalogo.nombre : fila.falla,
+        // Si el catálogo no la conoce, el id es lo único cierto que hay: se
+        // des-eslugifica para que se lea, pero no se le inventa un nombre. El
+        // helper es el mismo que usa mapearProlog(); antes cada uno hacía su cosa
+        // y por eso estas filas salían con guiones bajos y las del catálogo no.
+        nombre: nombreDeFalla(fila.falla, enCatalogo),
         enCatalogo: Boolean(enCatalogo),
         urgencia,
         clase: enCatalogo ? urgenciaClase(urgencia) : 'sin-urgencia',
@@ -67,12 +71,11 @@ export function distribuirPorCerteza(filas) {
     conteo[certezaNivel(fila.certeza_promedio)]++;
   }
 
-  return [
-    { nivel: 'alta', fallas: conteo.alta, etiqueta: 'Alta' },
-    { nivel: 'media', fallas: conteo.media, etiqueta: 'Media' },
-    { nivel: 'baja', fallas: conteo.baja, etiqueta: 'Baja' },
-    { nivel: 'desconocida', fallas: conteo.desconocida, etiqueta: 'Sin dato' },
-  ];
+  return ['alta', 'media', 'baja', 'desconocida'].map((nivel) => ({
+    nivel,
+    fallas: conteo[nivel],
+    etiqueta: etiquetaNivel(nivel),
+  }));
 }
 
 // El chart de barras horizontales se vuelve ilegible con 54 filas: cada una
@@ -85,4 +88,18 @@ export function topFallas(filas, maximo = 12) {
     total: filas.length,
     recortadas: filas.length > recortadas.length,
   };
+}
+
+// Filtra las filas por la búsqueda global, igual que hace BaseConocimiento con
+// el catálogo: coincide() sobre el nombre y la urgencia, con o sin tildes y con
+// varias palabras a la vez. Una consulta vacía deja las filas como están.
+//
+// La urgencia entra como etiqueta ("Crítica") y no como slug ("critica"), que es
+// como viene del catálogo: escribir "critica" tiene que encontrar las fallas
+// críticas, y el slug con tilde no aparecería en una búsqueda sin tildes.
+export function filtrarPorBusqueda(filas, consulta) {
+  if (!Array.isArray(filas)) return [];
+  return filas.filter((fila) =>
+    coincide(`${fila.nombre} ${fila.urgencia ?? ''}`, consulta)
+  );
 }

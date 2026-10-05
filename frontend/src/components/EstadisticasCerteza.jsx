@@ -3,7 +3,12 @@ import { useMemo } from 'react';
 import EstadoVacio from './EstadoVacio.jsx';
 import { useEstadisticasCerteza } from '../hooks/useEstadisticasCerteza.js';
 import { certezaNivel, certezaPorcentaje, etiquetaCerteza } from '../lib/diagnostico.js';
-import { distribuirPorCerteza, topFallas, unirPorFalla } from '../lib/estadisticas.js';
+import {
+  distribuirPorCerteza,
+  filtrarPorBusqueda,
+  topFallas,
+  unirPorFalla,
+} from '../lib/estadisticas.js';
 
 // Cifra grande con su etiqueta. El valor se pasa ya formateado para que el
 // componente no tenga que decidir entre "0%" y "sin dato" en cada llamada: en
@@ -47,7 +52,21 @@ function FilaTop({ fila, maximo }) {
   return (
     <li className="stats-top-row">
       <div className="stats-top-head">
-        <span className="stats-top-name">{fila.nombre}</span>
+        <span className="stats-top-name">
+          {fila.nombre}
+          {/* El nombre de arriba puede ser el id des-eslugificado, que es lo
+              unico cierto cuando el catalogo no conoce la falla. Sin esta
+              marca, esa fila se lee igual que una con nombre propio y el
+              conteo parece atribuirle al motor un nombre que no dio. */}
+          {!fila.enCatalogo && (
+            <span
+              className="stats-mark"
+              title="El historial guarda un id que el catálogo no conoce: se muestra su id, no un nombre inventado."
+            >
+              Sin nombre
+            </span>
+          )}
+        </span>
         {fila.urgencia && (
           <span className={`badge ${fila.clase}`}>{fila.urgencia}</span>
         )}
@@ -71,7 +90,7 @@ function FilaTop({ fila, maximo }) {
   );
 }
 
-export default function EstadisticasCerteza({ fallasCatalogo }) {
+export default function EstadisticasCerteza({ fallasCatalogo, searchQuery, onLimpiarBusqueda }) {
   const { stats, status, error } = useEstadisticasCerteza();
 
   // unirPorFalla necesita el catalogo para resolver el id a nombre y a urgencia,
@@ -80,12 +99,21 @@ export default function EstadisticasCerteza({ fallasCatalogo }) {
   const datos = useMemo(() => {
     if (!stats || !Array.isArray(fallasCatalogo) || fallasCatalogo.length === 0) return null;
     const filas = unirPorFalla(stats.porFalla, fallasCatalogo);
+    const coinciden = filtrarPorBusqueda(filas, searchQuery);
     return {
       filas,
       reparto: distribuirPorCerteza(filas),
-      top: topFallas(filas),
+      // El filtro va ANTES del recorte a 12. Al revés, una falla que sí coincide
+      // con la búsqueda se perdería por no haber entrado en el top, y el usuario
+      // vería "ninguna coincidencia" sobre una falla que tiene historial.
+      top: topFallas(coinciden),
+      // Las consultas y el reparto se cuentan sobre las filas sin filtrar: son
+      // del historial completo. Si se calcularan sobre el subconjunto que
+      // coincidió con la búsqueda, "certeza media" sería un número que no
+      // corresponde a nada guardado.
+      ocultas: filas.length - coinciden.length,
     };
-  }, [stats, fallasCatalogo]);
+  }, [stats, fallasCatalogo, searchQuery]);
 
   const cargando = status === 'pending' || (status === 'success' && !datos);
 
@@ -130,6 +158,7 @@ export default function EstadisticasCerteza({ fallasCatalogo }) {
   const maxNivel = Math.max(...datos.reparto.map((n) => n.fallas), 1);
   const maxTop = Math.max(...datos.top.filas.map((f) => f.veces), 1);
   const pctPromedio = certezaPorcentaje(stats.certezaPromedio);
+  const busquedaVacia = Boolean(searchQuery) && datos.top.filas.length === 0;
 
   return (
     <div className="stats-container">
@@ -197,15 +226,36 @@ export default function EstadisticasCerteza({ fallasCatalogo }) {
           </div>
         </div>
         <div className="card-body">
-          <ol className="stats-list stats-list--top">
-            {datos.top.filas.map((f) => (
-              <FilaTop key={f.id} fila={f} maximo={maxTop} />
-            ))}
-          </ol>
-          {datos.top.filas.some((f) => !f.enCatalogo) && (
+          {/* La búsqueda solo toca esta tarjeta. Los contadores y el reparto de
+              arriba se quedan como están a propósito: cuentan el historial
+              completo, y taparlos cuando el filtro no encuentra nada haría
+              parecer que se perdió el historial. */}
+          {busquedaVacia ? (
+            <EstadoVacio
+              titulo={`Ninguna falla del historial coincide con "${searchQuery}"`}
+              causa="La búsqueda revisa el nombre de la falla y su urgencia, con o sin tildes y con varias palabras a la vez. Las cifras de arriba no cambian: cuentan el historial completo."
+              accion={{ etiqueta: 'Limpiar búsqueda', manejar: onLimpiarBusqueda }}
+            />
+          ) : (
+            <>
+              <ol className="stats-list stats-list--top">
+                {datos.top.filas.map((f) => (
+                  <FilaTop key={f.id} fila={f} maximo={maxTop} />
+                ))}
+              </ol>
+              {datos.top.filas.some((f) => !f.enCatalogo) && (
+                <p className="card-note">
+                  Las filas marcadas «Sin nombre» son ids que el catálogo todavía no conoce: se
+                  muestran con su id, con los guiones bajos cambiados por espacios, en vez de
+                  inventar un nombre.
+                </p>
+              )}
+            </>
+          )}
+          {datos.ocultas > 0 && (
             <p className="card-note">
-              Las fallas que no aparecen con nombre propio son ids que el catálogo todavía no
-              conoce: se muestran tal cual en vez de inventar un nombre.
+              La búsqueda oculta {datos.ocultas} de las {datos.filas.length} fallas del
+              historial. Las cifras de arriba no cambian: cuentan el historial completo.
             </p>
           )}
         </div>

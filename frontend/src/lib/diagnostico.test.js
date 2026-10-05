@@ -15,8 +15,11 @@ import {
   convertirCosto,
   CORTE_CERTEZA_ALTA,
   CORTE_CERTEZA_MEDIA,
+  etiquetaConfianzaDato,
   etiquetaUrgencia,
+  LEYENDA_CONFIANZA,
   mapearProlog,
+  nombreDeFalla,
   tasaEsEstimada,
 } from './diagnostico.js';
 
@@ -122,4 +125,92 @@ test('mapearProlog: completa con el catalogo lo que el motor no trae', () => {
   assert.equal(desconocida.nombre, 'falla nueva');
   assert.equal(desconocida.urgencia, 'Desconocida');
   assert.deepEqual(desconocida.sintomas_relacionados, []);
+});
+
+// Cómo se nombra una falla. mapearProlog() y unirPorFalla() comparten este
+// helper, y ya divergieron una vez: uno des-eslugificaba el id y el otro lo
+// devolvía crudo, así que la misma columna mostraba "Aceite de motor bajo" en
+// unas filas y "aceite_motor_bajo" en otras.
+test('nombreDeFalla: el catálogo manda cuando conoce la falla', () => {
+  const base = { id: 'aceite_motor_bajo', nombre: 'Aceite de motor bajo' };
+  assert.equal(nombreDeFalla('aceite_motor_bajo', base), 'Aceite de motor bajo');
+});
+
+test('nombreDeFalla: sin catálogo se lee el id con espacios, no con guiones', () => {
+  assert.equal(nombreDeFalla('aceite_motor_bajo', null), 'aceite motor bajo');
+  assert.equal(nombreDeFalla('sistema_frenos_con_aire'), 'sistema frenos con aire');
+});
+
+// La etiqueta del `default` es la que ven las 20 fallas de la base original.
+// Antes decía "Procedencia no registrada", que describe una falta de
+// información en lugar de lo que sí sabemos: la falla es válida y su
+// procedencia son los foros, los manuales y los códigos OBD-II, aunque no una
+// investigación formal. El chip va corto a propósito —no cabe ni en la columna
+// de la leyenda ni en una tarjeta de la rejilla—, así que este assert también
+// protege que siga siendo corto.
+test('etiquetaConfianzaDato: la base original se nombra, no se declara desconocida', () => {
+  assert.equal(
+    etiquetaConfianzaDato('no_registrada'),
+    'Conocimiento de foros de mecánica'
+  );
+  assert.equal(
+    etiquetaConfianzaDato(undefined),
+    'Conocimiento de foros de mecánica',
+    'ausente cae en el mismo caso que el motor emite explícito'
+  );
+  // Techo de caracteres, no de pixeles: el chip mide ~6.2px por caracter a
+  // 0.75rem, mas 20px de padding y 2px de borde, asi que 40 caracteres son
+  // ~270px. El contenido de la tarjeta mas estrecha de la rejilla es 224px
+  // (280px de columna menos --card-pad de 28px por lado), y el chip ya envuelve
+  // a dos lineas en vez de desbordarse. Este assert existe para que nadie
+  // alargue la etiqueta sin notar que en una pantalla angosta se parte en tres.
+  assert.ok(
+    etiquetaConfianzaDato('no_registrada').length <= 40,
+    'la etiqueta debe seguir siendo corta: el detalle largo vive en la leyenda'
+  );
+});
+
+test('etiquetaConfianzaDato: los tres niveles con fuente conservan su texto', () => {
+  assert.equal(etiquetaConfianzaDato('alta'), 'Investigación verificada');
+  assert.equal(
+    etiquetaConfianzaDato('alta_costo_estimado'),
+    'Falla verificada, costo estimado'
+  );
+  assert.equal(etiquetaConfianzaDato('media'), 'Investigación parcial');
+});
+
+// La leyenda y las tarjetas de falla comparten estas etiquetas. Si divergieran,
+// la leyenda estaría explicando un chip que no aparece en ninguna tarjeta.
+test('LEYENDA_CONFIANZA: cada nivel del catálogo tiene su entrada en la leyenda', () => {
+  const enLeyenda = new Set(LEYENDA_CONFIANZA.map((n) => n.etiqueta));
+
+  for (const confianza of ['alta', 'alta_costo_estimado', 'media']) {
+    assert.ok(
+      enLeyenda.has(etiquetaConfianzaDato(confianza)),
+      `la leyenda no explica el chip de "${confianza}"`
+    );
+  }
+});
+
+test('LEYENDA_CONFIANZA: la entrada sin fuente usa la etiqueta del default', () => {
+  // El `default` de etiquetaConfianzaDato() y esta entrada dicen lo mismo: es
+  // la misma situación descrita en dos lugares de la misma pantalla.
+  const sinFuente = LEYENDA_CONFIANZA.find((n) => !n.confianza);
+  assert.ok(sinFuente, 'la leyenda tiene que explicar el caso sin fuente registrada');
+  assert.equal(sinFuente.etiqueta, etiquetaConfianzaDato('no_registrada'));
+});
+
+test('LEYENDA_CONFIANZA: no lista niveles que el catálogo no usa', () => {
+  // `baja` no aparece en ninguna falla del catálogo hoy. Prometerlo en una
+  // leyenda sería una etiqueta que nadie llega a ver; si el motor agrega una
+  // falla `baja`, esta lista es la que hay que actualizar.
+  assert.equal(
+    LEYENDA_CONFIANZA.some((n) => n.confianza === 'baja'),
+    false
+  );
+  assert.equal(
+    new Set(LEYENDA_CONFIANZA.map((n) => n.etiqueta)).size,
+    LEYENDA_CONFIANZA.length,
+    'no hay dos entradas diciendo lo mismo'
+  );
 });
