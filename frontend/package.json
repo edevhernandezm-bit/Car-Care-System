@@ -6,7 +6,8 @@
   "scripts": {
     "preview": "vite preview",
     "build": "vite build",
-    "dev": "vite"
+    "dev": "vite",
+    "test": "node --test \"src/lib/*.test.js\""
   },
   "keywords": [],
   "type": "module",

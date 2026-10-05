@@ -212,10 +212,23 @@ const diagnosticoSchema = new mongoose.Schema({
   fallas: [
     {
       falla: { type: String, required: true },
-      // El motor solo emite certezas en (0, 1] (validar_kb lo comprueba). Sin
-      // estos límites, un cliente podría guardar certeza: 99 y envenenar los
-      // promedios de /api/stats/certeza.
-      certeza: { type: Number, required: true, min: 0, max: 1 },
+      // El motor calcula la certeza y la redondea a dos decimales
+      // (certeza_falla/3 en motor_inferencia.pl:932). El 0 entra por esa via:
+      // una regla con certeza menor a 0.005 redondea a 0.0 y sale en el JSON.
+      // Por eso el intervalo es [0, 1] y no (0, 1]: excluirlo rechazaba con 400
+      // un diagnostico que el motor si habia emitido, y se perdia entero. El
+      // extremo superior sigue cerrado porque es el que envenena los promedios
+      // de /api/stats/certeza: sin el, un cliente podria guardar certeza: 99.
+      // Mongoose no implementa exclusiveMaximum (es JSON Schema), asi que los
+      // limites se fijan con validator.
+      certeza: {
+        type: Number,
+        required: true,
+        validate: {
+          validator: (v) => Number.isFinite(v) && v >= 0 && v <= 1,
+          message: 'la certeza debe estar en el intervalo [0, 1]',
+        },
+      },
       nombre: { type: String, default: '' },
       urgencia: { type: String, default: '' },
       moneda: { type: String, default: '' },
@@ -274,42 +287,65 @@ app.post('/api/diagnosticos', async (req, res, next) => {
 // Estadísticas del factor de certeza: certeza promedio por falla, cantidad de
 // veces que se infirió cada falla y el promedio general, basado en el historial
 // guardado.
+
+// La certeza se publica siempre a dos decimales. Un promedio con quince cifras no
+// viene de datos reales, y obligaría a cada cliente a redondear por su cuenta.
+// El global y el promedio por falla pasan por aquí para que la regla sea una.
+const redondearCerteza = (v) => Math.round(v * 100) / 100;
+
 app.get('/api/stats/certeza', async (_req, res, next) => {
   try {
-    const porFalla = await Diagnostico.aggregate([
-      { $unwind: '$fallas' },
-      {
-        $group: {
-          _id: '$fallas.falla',
-          veces: { $sum: 1 },
-          certeza_promedio: { $avg: '$fallas.certeza' },
+    // total_consultas se cuenta sobre los documentos, no sobre el pipeline
+    // desenrollado: una consulta que no infirió ninguna falla sigue siendo una
+    // consulta, y con el $unwind desaparecería del conteo. No es un caso
+    // teórico: el cliente guarda el diagnóstico aunque el motor no devuelva
+    // ninguna falla.
+    const [porFalla, totales, total_consultas] = await Promise.all([
+      Diagnostico.aggregate([
+        { $unwind: '$fallas' },
+        {
+          $group: {
+            _id: '$fallas.falla',
+            veces: { $sum: 1 },
+            certeza_promedio: { $avg: '$fallas.certeza' },
+          },
         },
-      },
-      { $sort: { veces: -1 } },
-    ]);
+        { $sort: { veces: -1 } },
+      ]),
+      Diagnostico.aggregate([
+        { $unwind: '$fallas' },
+        {
+          $group: {
+            _id: null,
+            promedio_global: { $avg: '$fallas.certeza' },
+            total_fallas_inferidas: { $sum: 1 },
+          },
+        },
+      ]),
+      Diagnostico.countDocuments(),
 
-    const totales = await Diagnostico.aggregate([
-      { $unwind: '$fallas' },
-      {
-        $group: {
-          _id: null,
-          promedio_global: { $avg: '$fallas.certeza' },
-          total_consultas: { $sum: 1 },
-          total_fallas_inferidas: { $count: {} },
-        },
-      },
     ]);
 
     res.json({
-      total_consultas: (totales[0] && totales[0].total_consultas) || 0,
+      total_consultas,
       total_fallas_inferidas: (totales[0] && totales[0].total_fallas_inferidas) || 0,
-      certeza_promedio_global: (totales[0] && totales[0].promedio_global) || 0,
+      // El promedio sale null, no 0, cuando no hay ninguna falla que promediar.
+      // El `|| 0` de antes convertia "aun no se midio nada" en "la certeza media
+      // del sistema es 0", que es una afirmacion que nadie hizo: el cliente lo
+      // pintaba como "0%" con nivel Bajo, junto a las consultas que si existen.
+      // Un conteo ausente si es 0 de verdad; un promedio ausente es null.
+      certeza_promedio_global: totales[0]
+        ? redondearCerteza(totales[0].promedio_global)
+        : null,
       por_falla: porFalla
         .map((f) => ({
           falla: f._id,
           veces: f.veces,
-          certeza_promedio: Math.round(f.certeza_promedio * 100) / 100,
+          certeza_promedio: redondearCerteza(f.certeza_promedio),
         }))
+        // El pipeline ya ordena por `veces`, pero Mongo no garantiza un orden
+        // estable entre empates y este sort sí lo tiene: mantiene determinista
+        // el orden en que el cliente recibe las filas con la misma cuenta.
         .sort((a, b) => b.veces - a.veces),
     });
   } catch (err) {

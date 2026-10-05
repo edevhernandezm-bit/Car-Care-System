@@ -59,6 +59,16 @@ Para detener:
 
 ### Pruebas automatizadas
 
+Las pruebas de la lógica de presentación (`frontend/src/lib/diagnostico.js`:
+búsqueda con y sin tildes, cortes de certeza, conversión de moneda) no necesitan
+ni navegador ni base de datos:
+
+```bash
+cd frontend && npm test
+```
+
+El e2e levanta su propio stack y sí necesita MongoDB y SWI-Prolog:
+
 ```bash
 cd backend && npm test
 ```

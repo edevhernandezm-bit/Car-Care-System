@@ -1,4 +1,4 @@
-import { etiquetaAnio, etiquetaTransmision } from '../lib/diagnostico.js';
+import { coincide, etiquetaAnio, etiquetaTransmision } from '../lib/diagnostico.js';
 import EstadoVacio from './EstadoVacio.jsx';
 
 export default function Paso2Sintomas({
@@ -12,7 +12,7 @@ export default function Paso2Sintomas({
   onLimpiarBusqueda,
 }) {
   const filtrados = sintomasCatalogo.filter((s) =>
-    `${s.nombre} ${s.categoria}`.toLowerCase().includes(searchQuery)
+    coincide(`${s.nombre} ${s.categoria}`, searchQuery)
   );
 
   const categorias = {};

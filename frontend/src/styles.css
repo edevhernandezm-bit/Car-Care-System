@@ -1,35 +1,95 @@
+/* Las cinco fuentes se sirven desde este mismo origen (public/fonts), no desde
+   Google Fonts. Subconjunto latin: U+0000-00FF cubre las vocales acentuadas, la
+   enye, la dieresis y la puntuacion espanola; verificado glifo a glifo contra
+   los caracteres no ASCII que aparecen en el codigo. Las licencias OFL van en
+   public/fonts y viajan con el bundle porque la licencia obliga a ello. */
+
+/* Saira llega como fuente variable de un solo fichero que cubre wght 100-900.
+   El eje tiene que declararse: el nombre interno del fichero es "Saira Thin" y
+   sin font-weight: 100 900 el navegador pinta la instancia Thin. */
+@font-face {
+  font-family: 'Saira';
+  src: url('/fonts/saira-var-400-600.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Saira Semi Condensed';
+  src: url('/fonts/saira-semicondensed-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Saira Semi Condensed';
+  src: url('/fonts/saira-semicondensed-700.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('/fonts/plexmono-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('/fonts/plexmono-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  color-scheme: light;
-  --surface: #ffffff;
+  color-scheme: dark;
+  --surface: #121a2b;
   /* Superficie de la pagina: los dos topes del degradado, no un color plano.
      Antes vivian como literales dentro de la regla body. */
-  --bg-top: #f5f7fb;
-  --bg-bottom: #e6ebf4;
+  --bg-top: #0b1220;
+  --bg-bottom: #070c15;
   /* Superficie hundida: bloques que se leen por debajo de una tarjeta. */
-  --surface-sunken: #f3f6fb;
-  --text: #25303b;
-  --muted: #667085;
+  --surface-sunken: #1a2337;
+  --text: #e8edf7;
+  --muted: #8d9bb5;
   /* Version del texto apagado con mas peso, para dato tabular o de lectura
-     larga. 7.9:1 sobre blanco, frente a 4.6:1 de --muted. */
-  --muted-strong: #475569;
-  --primary: #3056d3;
-  --primary-hover: #2648b9;
-  --primary-soft: #e3e7ff;
-  /* Color de texto sobre un relleno --primary. 7.2:1. */
+     larga. 9.89:1 sobre --surface, frente a 6.20:1 de --muted. */
+  --muted-strong: #b9c4d8;
+  /* Relleno de las acciones primarias. El azul anterior (#3056d3) se quedaba
+     en 2.81:1 contra --surface, asi que el boton no se separaba de la tarjeta.
+     Este marca 3.35:1 y sostiene 5.19:1 con el texto blanco. */
+  --primary: #3b63e0;
+  /* En fondo oscuro el estado hover aclara en vez de oscurecer: oscurecer
+     llevaria el relleno por debajo del minimo de 3:1. */
+  --primary-hover: #4e74e8;
+  /* Color de acento para TEXTO. --primary no cumple como texto: 2.81:1 contra
+     --surface. Por eso son dos tokens y no uno. */
+  --accent-text: #7aa2f7;
+  --primary-soft: #1e2c4e;
+  /* Color de texto sobre un relleno --primary. 5.19:1. */
   --on-primary: #ffffff;
   /* No hay --success ni --warning. El verde y el ambar habituales (#22c55e y
      #f59e0b) se quedan en 2.3:1 y 2.15:1 sobre blanco: inservibles como color
      de texto. Cuando haga falta un estado positivo se declara con su propio
      nombre y con un valor que si cumpla 4.5:1. */
-  --danger-text: #b00020;
+  --danger-text: #f87171;
   /* Fondo del resumen de errores. El texto lo aporta --danger-text. */
-  --danger-surface: #fff8f8;
+  --danger-surface: #2a1518;
+  /* El enlace del resumen tiene que leerse como accion, no como parte del
+     mensaje: un tono mas claro, 9.08:1 sobre --danger-surface. */
+  --danger-link: #fca5a5;
   /* --border queda para separadores decorativos entre bloques de una tarjeta,
      que la norma excluye del requisito de contraste. El borde de un campo de
      formulario si es el limite del control y necesita 3:1 contra la superficie
      (WCAG 1.4.11), asi que usa su propio token. */
-  --border: #dde4ef;
-  --border-control: #7f8fa6;
+  --border: #2a3550;
+  --border-control: #6e7ea8;
   /* Insignias de urgencia: todas con texto blanco salvo "baja". Cada fondo se
      eligio para alcanzar al menos 4.5:1 sobre su texto (WCAG 1.4.3); el ambar
      anterior (#d97706) se quedaba en 3.19:1 y no cumplia. */
@@ -38,42 +98,48 @@
   --urgencia-baja: #fde047;
   --on-urgencia-baja: #422006;
   /* Certeza del diagnostico. Son un eje distinto del de urgencia, asi que usan
-     su propia escala y no la comparten. Los tres pasan 4.5:1 sobre blanco para
-     poder usarse tambien como texto: #15803d 5.02:1, #b45309 5.02:1,
-     #64748b 4.76:1. */
-  --certeza-alta: #15803d;
-  --certeza-media: #b45309;
-  --certeza-baja: #64748b;
-  /* "Inter" figuraba en font-family pero no estaba cargado en ninguna parte:
-     no hay @import, ni <link> en index.html, ni archivo de fuente. El
-     navegador caia a system-ui en silencio y la fuente declarada nunca se
-     llegaba a pintar. Se declara una pila del sistema, que esta disponible en
-     cada equipo sin pedir nada por red (el taller puede estar sin internet). */
-  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue',
-    Arial, sans-serif;
-  /* Pila monoespaciada. La usan los bloques de codigo y las cifras tabulares;
-     se declara aqui para que no quede colgando sin consumidor. */
-  --font-mono: ui-monospace, 'Cascadia Code', 'Segoe UI Mono', Consolas, monospace;
+     su propia escala y no la comparten. Cada valor cumple los dos papeles que
+     tiene: texto en .certainty-value y relleno en .certainty-fill. Sobre
+     --surface 9.97:1, 10.41:1 y 6.78:1; sobre la pista --surface-sunken 9.00:1,
+     9.39:1 y 6.11:1. */
+  --certeza-alta: #4ade80;
+  --certeza-media: #fbbf24;
+  --certeza-baja: #94a3b8;
+  /* Direccion mecanizada: tres familias servidas desde /public/fonts, sin
+     peticiones a fonts.googleapis.com, para que el taller pueda seguir
+     trabajando sin internet. Detras de cada una queda su equivalente del
+     sistema como red de seguridad: si el woff2 no llegara a descargarse, el
+     texto se sigue viendo bien. */
+  --font-display: 'Saira Semi Condensed', 'Segoe UI', system-ui, sans-serif;
+  --font-sans: 'Saira', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  /* Cifras, lecturas de instrumento y anotaciones. Tabular por defecto, que es
+     justo lo que se necesita para que las columnas de numeros no bailen. */
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Code', Consolas, monospace;
   /* Escalera de elevacion. Antes un unico --shadow hacia todo, incluidos los
      campos de formulario, donde la sombra se usaba como anillo y no como
      elevacion: por eso --shadow-md no se aplica a ningun input. */
-  --shadow-md: 0 20px 50px rgba(15, 23, 42, 0.08);
-  --shadow-lg: 0 -12px 28px rgba(15, 23, 42, 0.12);
+  /* Sobre superficies oscuras la sombra casi no se ve y la separacion la aporta
+     el borde. Se mantiene una sombra larga y profunda para que las tarjetas no
+     se peguen al fondo, no para sugerir altura. */
+  --shadow-md: 0 20px 50px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 -12px 28px rgba(0, 0, 0, 0.5);
   /* Anillo de foco. Distinto del color del borde para que el foco se lea
      incluso sobre un control que ya tiene borde propio. */
   --focus-ring: #93a4ff;
 
   /* Controles: fondo neutro compartido por el campo de busqueda y los botones
      deshabilitados. */
-  --control-bg: #e2e8f0;
-  --control-bg-hover: #d3dbe7;
+  --control-bg: #232e45;
+  --control-bg-hover: #2e3a54;
   --on-control-disabled: #94a3b8;
 
   /* Barra lateral: degradado y color de texto propios, porque vive sobre un
-     fondo oscuro y no puede reutilizar los tokens de superficie. El texto
-     apagado (#cbd5e1) marca 10.3:1 sobre --sidebar-to, y el fuerte 15.6:1. */
-  --sidebar-from: #151f35;
-  --sidebar-to: #1f2937;
+     fondo oscuro y no puede reutilizar los tokens de superficie. Ahora que la
+     app entera es oscura, la barra tiene que quedar MAS OSCURA que el area de
+     contenido (#1a2337) para que se lean dos planos y no uno solo. El texto
+     apagado (#cbd5e1) marca 13.9:1 sobre --sidebar-to, y el fuerte 15.1:1. */
+  --sidebar-from: #080d17;
+  --sidebar-to: #101a2c;
   --on-sidebar: #eef2ff;
   --on-sidebar-muted: #cbd5e1;
   --on-sidebar-strong: #ffffff;
@@ -148,6 +214,10 @@ h2,
 h3,
 h4 {
   overflow-wrap: break-word;
+  /* La display es condensada, de placa de equipo: se reserva para la jerarquia
+     y los rotulos cortos. Los parrafos largos nunca la usan. */
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
 }
 
 .app-shell {
@@ -171,7 +241,10 @@ h4 {
   padding: 32px 26px;
   color: var(--on-sidebar);
   background: linear-gradient(180deg, var(--sidebar-from) 0%, var(--sidebar-to) 100%);
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
+/* Separador entre planos: filete de instrumentacion en --border-control (3.44:1
+   contra el area de contenido) en vez de un blanco al 8%, que sobre fondo oscuro
+   se perdia. Es una costura de chasis, no el limite de un control. */
+  border-right: 1px solid var(--border-control);
 }
 
 /* Enlace de salto: el primer elemento enfocable de la pagina. Invisible en
@@ -226,8 +299,10 @@ h4 {
 
 .brand-name {
   margin: 0;
+  font-family: var(--font-display);
   font-size: 1.2rem;
   font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .brand span {
@@ -250,6 +325,12 @@ h4 {
   border-radius: var(--radius-btn);
   cursor: pointer;
   white-space: nowrap;
+  /* Rotulo de mando: condensada, en versalitas y con espaciado abierto, que es
+     como se rotula un panel de instrumentacion. */
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   transition: transform 0.2s ease, background 0.2s ease, color 0.2s ease;
 }
 
@@ -265,8 +346,10 @@ h4 {
 
 .menu-item.active {
   color: var(--on-sidebar-strong);
-  background: rgba(255, 255, 255, 0.1);
-  box-shadow: inset 4px 0 0 var(--primary);
+  /* Tinte de acento en vez de blanco al 10%: sobre el chasis oscuro el blanco
+     al 10% apenas levantaba la fila. */
+  background: rgba(122, 162, 247, 0.16);
+  box-shadow: inset 4px 0 0 var(--accent-text);
 }
 
 .main-content {
@@ -287,6 +370,7 @@ h4 {
 .topbar-label {
   margin: 0;
   color: var(--muted);
+  font-family: var(--font-mono);
   text-transform: uppercase;
   font-size: 0.82rem;
   letter-spacing: 0.12em;
@@ -361,9 +445,10 @@ h4 {
   color: var(--text);
 }
 
+/* Mismo anillo que los demas controles: --focus-ring, no --primary. */
 .search-box input:focus-visible {
-  border-color: var(--primary);
-  outline: 2px solid var(--primary);
+  border-color: var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -386,7 +471,13 @@ h4 {
 
 .primary-btn,
 .secondary-btn {
-  border: none;
+  /* El borde es transparente en los dos para que compartan exactamente la
+     misma caja: si solo el secundario lo tuviera, mediria 2px mas alto y
+     quedaria desalineado junto al primario. El secundario lo pinta de verdad,
+     porque su contorno es su unica senal de limite y con el relleno
+     --control-bg solo daba 1.23:1 sobre la tarjeta, por debajo del 3:1 que
+     exige WCAG 1.4.11 (limites de componentes de interfaz). */
+  border: 1px solid transparent;
   border-radius: var(--radius-btn);
   padding: 12px 18px;
   cursor: pointer;
@@ -406,19 +497,24 @@ h4 {
 .secondary-btn {
   background: var(--control-bg);
   color: var(--text);
+  border-color: var(--border-control);
 }
 
 .secondary-btn:hover {
   background: var(--control-bg-hover);
 }
 
-/* Deshabilitado: el texto usa --on-control-disabled porque 2.6:1 no alcanza
-  para 4.5:1. El bajo contraste es intencional, la senal la da la opacidad del
-  contenedor mas el cursor y el atributo disabled. */
+/* Deshabilitado: el texto usa --on-control-disabled, que sobre --control-bg
+   marca 5.29:1 y si alcanza el 4.5:1 (con los tokens claros anteriores se
+   quedaba en 2.6:1, y por eso era solo una pista visual). El estado no
+   depende del color: el borde se apaga, el cursor pasa a not-allowed y el
+   atributo disabled es lo que un lector de pantalla anuncia como no
+   disponible. */
 .primary-btn:disabled,
 .secondary-btn:disabled {
   background: var(--control-bg);
   color: var(--on-control-disabled);
+  border-color: var(--border);
   cursor: not-allowed;
 }
 
@@ -430,17 +526,20 @@ h4 {
   background: var(--control-bg);
 }
 
+/* Mismo anillo que los campos: --focus-ring marca 7.44:1 sobre la tarjeta,
+   mientras --primary como contorno se queda en 3.35:1. */
 .primary-btn:focus-visible,
 .secondary-btn:focus-visible {
-  outline: 2px solid var(--primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
+/* El formulario vive DENTRO de una .info-card, asi que no repite superficie:
+   un fondo, un radio y una sombra aqui dentro serian una segunda tarjeta
+   anidada, que es justo el nivel de mas que se quito de .results-panel. Solo
+   aporta la separacion respecto al texto que lo precede. */
 .vehicle-form {
-  background: var(--surface);
-  border-radius: var(--radius-card);
-  padding: var(--card-pad);
-  box-shadow: var(--shadow-md);
+  margin-top: 4px;
 }
 
 .form-grid {
@@ -464,6 +563,16 @@ h4 {
   color: var(--muted);
 }
 
+/* El nombre del campo es un rotulo corto de placa: display condensada en
+   versalitas. El color lo pone el label, asi que aqui solo la forma. */
+.form-grid label > span {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
 .form-grid input,
 .form-grid select,
 .form-grid textarea {
@@ -480,18 +589,35 @@ h4 {
   cursor: pointer;
 }
 
+/* El año es un dato, no una palabra: mono tabular para que el ancho no baile
+   mientras se escribe y para que una columna de años se lea de un vistazo. */
+.form-grid input[type='number'] {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+/* El foco se marca con --focus-ring (7.44:1 sobre --surface) y no con
+   --primary, que como color de borde o relleno solo llega a 3.35:1 y sobre la
+   superficie hundida baja de 3:1. El halo usa el mismo tinte del anillo. */
 .form-grid input:focus-visible,
 .form-grid select:focus-visible {
   outline: none;
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-soft);
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 3px rgba(147, 164, 255, 0.35);
 }
 
-/* Ayuda contextual bajo un campo.Va enlazada con aria-describedby para que un
-   lector de pantalla la anuncie junto al control, no solo al verla. */
+/* Ayuda contextual bajo un campo. Va enlazada con aria-describedby para que un
+   lector de pantalla la anuncie junto al control, no solo al verla. Se presenta
+   como anotacion al margen (filete + sangria) para que no se confunda con el
+   valor escrito. Se queda en la sans a proposito: son frases explicativas
+   largas, y la condensada en mono las hace mas lentas de leer. */
 .field-hint {
-  font-size: 0.82rem;
-  line-height: 1.4;
+  display: block;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+  font-size: 0.85rem;
+  line-height: 1.55;
   color: var(--muted);
   font-weight: 400;
   text-wrap: pretty;
@@ -502,12 +628,14 @@ h4 {
 }
 
 /* Error junto al campo: se enlaza con aria-describedby para que el lector de
-   pantalla lo anuncie al enfocarlo, no solo cuando se ve. */
+   pantalla lo anuncie al enfocarlo, no solo cuando se ve. Es corto y tecnico,
+   asi que si va en mono, que es donde se lee como una lectura de instrumento. */
 .field-error {
   margin: 0;
-  font-size: 0.82rem;
-  line-height: 1.4;
-  font-weight: 500;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  font-weight: 600;
   color: var(--danger-text);
 }
 
@@ -517,17 +645,24 @@ h4 {
   background: var(--danger-surface);
 }
 
+/* El anillo de foco de error lo sostiene el BORDE, no esta sombra: el borde
+   pasa a --danger-text, que marca 6.28:1 sobre --surface y cumple 1.4.11 por si
+   mismo. El halo es refuerzo visual. Con el alfa anterior (0.16 del rojo viejo)
+   la mezcla apenas llegaba a 1.03:1 y sobre fondo oscuro era invisible. */
 .form-grid input[aria-invalid='true']:focus-visible,
 .form-grid select[aria-invalid='true']:focus-visible {
   border-color: var(--danger-text);
-  box-shadow: 0 0 0 3px rgba(176, 0, 32, 0.16);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.45);
 }
 
 /* Resumen de errores: aparece arriba del formulario y recibe el foco tras un
    envio fallido. El borde grueso mantiene visible su posicion aunque el foco
    se dibuje solo con contorno (WCAG 3.3.1). */
+/* Panel de alarma: mas denso que una nota, con el titulo como rotulo de
+   instrumento. El role="alert" y el foco programatico los aporta el componente,
+   no este CSS: aqui solo va la forma. */
 .error-summary {
-  padding: 14px 18px;
+  padding: 16px 20px;
   border: 1px solid var(--danger-text);
   border-left-width: 5px;
   border-radius: var(--radius-input);
@@ -540,8 +675,12 @@ h4 {
 }
 
 .error-summary-title {
-  margin: 0 0 6px;
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-size: 0.86rem;
   font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
   color: var(--danger-text);
 }
 
@@ -550,8 +689,17 @@ h4 {
   padding-left: 20px;
 }
 
+/* El enlace lleva --danger-link, un tono mas claro que el resto del mensaje:
+   sobre el mismo relleno marca 9.08:1 frente a 6.23:1 del texto, y asi se lee
+   como accion y no como parte del texto. */
 .error-summary a {
-  color: var(--danger-text);
+  color: var(--danger-link);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.error-summary a:hover {
+  text-decoration-thickness: 2px;
 }
 
 .form-actions {
@@ -571,10 +719,13 @@ h4 {
   min-width: 0;
 }
 
+/* Sobre fondo oscuro la sombra casi no separa nada, asi que la tarjeta lleva
+   ademas un borde: es el borde lo que la despega del fondo, no la elevacion. */
 .info-card {
   min-width: 0;
   background: var(--surface);
   padding: var(--card-pad);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-md);
 }
@@ -600,10 +751,28 @@ h4 {
   min-width: 0;
 }
 
+/* Rotulo de seccion. En los formularios hace de indicador de paso ("Paso 1 de
+   2"), asi que tiene que leerse como una lectura de instrumento y no como un
+   subtitulo: mono, versalitas y una filete de acento a la izquierda. */
 .card-category {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   color: var(--muted-strong);
-  margin: 0 0 8px;
-  font-size: 0.9rem;
+  margin: 0 0 10px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.card-category::before {
+  content: '';
+  flex: none;
+  width: 3px;
+  height: 1.05em;
+  background: var(--accent-text);
 }
 
 /* Insignia: el color de texto por defecto es --on-primary y cada variante de
@@ -692,8 +861,12 @@ h4 {
   align-content: start;
 }
 
+/* Rejilla de filas: cada sintoma es una celda con borde y no un elemento suelto
+   de una lista. Con 38 sintomas delante lo que hace falta es escanear la
+   rejilla, y para eso las filas tienen que quedar alineadas en columnas. */
 .sintomas-checklist {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(250px, 100%), 1fr));
   gap: 8px;
 }
 
@@ -716,17 +889,37 @@ h4 {
   padding: 14px var(--card-pad);
   padding-bottom: max(14px, env(safe-area-inset-bottom));
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius-card);
   /* Sombra propia, mas densa que la de las tarjetas: esta barra flota sobre el
      contenido y necesita separarse de el, no solo distinguirse. */
   box-shadow: var(--shadow-lg);
 }
 
+/* Filete de instrumentacion en el canto izquierdo: es lo que convierte la
+   barra en una lectura fija y no en otro boton que flota. */
+.analysis-bar::before {
+  content: '';
+  position: absolute;
+  inset-block: -1px;
+  left: -1px;
+  width: 4px;
+  background: var(--accent-text);
+  border-radius: var(--radius-card) 0 0 var(--radius-card);
+}
+
+/* Lectura principal de la barra: es un contador, asi que mono tabular y con
+   cuerpo de lectura. El texto pasa de --muted a --text porque es el dato que
+   el usuario consulta antes de decidir si seguir marcando. El aria-live lo
+   pone el componente. */
 .analysis-bar-count {
   margin: 0;
-  color: var(--muted);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1rem;
   font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .analysis-bar-actions {
@@ -736,13 +929,38 @@ h4 {
   margin-left: auto;
 }
 
+/* La fila misma es la celda. El estado activo lo cambia :has() desde el input:
+   con 38 entradas, lo unico que hace falta ver de un vistazo es cuales estan
+   marcadas, asi que la fila activada gana superficie, borde de acento y un
+   filete izquierdo mas grueso. El input conserva su foco y su estado nativos;
+   aqui solo se pinta el contenedor. */
 .checkbox-item {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 12px 0;
+  min-height: 44px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  background: var(--surface-sunken);
   cursor: pointer;
   user-select: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.checkbox-item:has(input:checked) {
+  border-color: var(--accent-text);
+  border-left-width: 3px;
+  background: var(--primary-soft);
+}
+
+.checkbox-item:hover {
+  border-color: var(--border-control);
+}
+
+.checkbox-item:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .checkbox-item input[type='checkbox'] {
@@ -751,7 +969,10 @@ h4 {
   height: 18px;
   margin-top: 2px;
   cursor: pointer;
-  accent-color: var(--primary);
+  /* El relleno del checkbox usa el acento de texto: --primary se queda en 3:1
+     justo sobre la superficie de la fila, y el limite de un control necesita
+     3:1 con margen. */
+  accent-color: var(--accent-text);
 }
 
 .checkbox-item span {
@@ -759,11 +980,16 @@ h4 {
   min-width: 0;
 }
 
+/* El bloque de codigo va dentro de una .info-card, que ya es --surface: con
+   el mismo fondo era invisible. --surface-sunken lo convierte en un pozo
+   rebajado de verdad, que es lo que tiene que parecer. */
 .code-block {
   margin: 8px 0 0;
   padding: 12px;
+  border: 1px solid var(--border);
   border-radius: var(--radius-code);
-  background: var(--surface);
+  background: var(--surface-sunken);
+  color: var(--muted-strong);
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -775,8 +1001,23 @@ h4 {
   color: var(--muted);
 }
 
+/* Color de acento para TEXTO. Antes reutilizaba --primary, que sobre superficie
+   oscura da 2.81:1 y dejaba el readout del vehiculo casi ilegible. */
 .text-primary {
-  color: var(--primary);
+  color: var(--accent-text);
+}
+
+/* El readout del vehiculo (marca, modelo, año y transmisión) va en mono tabular
+   y en versalitas: es una placa de identificacion. Comparte lenguaje con el
+   indicador de paso, asi que el paso 1 y el paso 2 se leen como el mismo
+   aparato y no como dos pantallas distintas. */
+.card-header .text-primary {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.92em;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 /* El rojo de estado habitual (#ef4444) marcaba 3.76:1 sobre blanco: suficiente
@@ -786,7 +1027,7 @@ h4 {
   color: var(--danger-text);
 }
 
-.diagnostico-container {
+:is(.diagnostico-container, .stats-container) {
   display: flex;
   flex-direction: column;
   gap: var(--gap);
@@ -874,6 +1115,14 @@ h4 {
   background: var(--certeza-baja);
 }
 
+/* Los cortes del motor producen ademas 'desconocida', para una certeza que no
+   llego. El texto de ese nivel ya tenia color (.certainty-value--desconocida)
+   pero el relleno no: la barra se quedaba invisible sin el, y una pista vacia
+   parece un dato en cero. */
+.certainty-fill--desconocida {
+  background: var(--muted);
+}
+
 /* Las marcas van sobre el relleno: si no, desaparecen en cuanto la certeza pasa
    el corte, que es justo cuando masuseful es verlos. */
 .certainty-tick {
@@ -939,6 +1188,10 @@ h4 {
   padding-top: 10px;
 }
 
+/* Pie de bloque: la aclaracion que evita que un dato se lea mal. .card-note es
+   el mismo texto que .why-note, con otro dueño (las tarjetas de estadisticas),
+   asi que comparte la regla en vez de repetirla. */
+.card-note,
 .why-note {
   margin: 0;
   color: var(--muted-strong);
@@ -1089,7 +1342,7 @@ h4 {
     height: auto;
     padding: 14px var(--shell-pad-x);
     border-right: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid var(--border);
   }
 
   .brand {
@@ -1242,6 +1495,149 @@ h4 {
     width: 18px;
     height: 18px;
   }
+}
+
+/* Entrada mecanica de la secuencia del diagnostico: escalonada, corta y sin
+   rebotes. Un instrumento no rebota, se estabiliza. El retardo crece con la
+   posicion para que la pantalla se lea como una serie de lecturas y no como un
+   bloque que aparece de golpe.
+
+   No lleva su propio prefers-reduced-motion: el bloque global del final del
+   fichero ya pone animation-duration a 0.01ms para todo, que es lo que pide
+   2.3.3. Anadirlo aqui seria una segunda fuente de verdad para lo mismo.
+
+   .analysis-bar queda fuera porque es position: sticky, y animarle el transform
+   durante la entrada la despega de su sitio. */
+@keyframes instrument-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+:is(.diagnostico-container, .stats-container) > *:not(.analysis-bar) {
+  animation: instrument-in 0.28s ease-out both;
+}
+
+:is(.diagnostico-container, .stats-container) > *:not(.analysis-bar):nth-child(1) {
+  animation-delay: 0ms;
+}
+
+:is(.diagnostico-container, .stats-container) > *:not(.analysis-bar):nth-child(2) {
+  animation-delay: 40ms;
+}
+
+:is(.diagnostico-container, .stats-container) > *:not(.analysis-bar):nth-child(3) {
+  animation-delay: 80ms;
+}
+
+:is(.diagnostico-container, .stats-container) > *:not(.analysis-bar):nth-child(4) {
+  animation-delay: 120ms;
+}
+
+:is(.diagnostico-container, .stats-container) > *:not(.analysis-bar):nth-child(n + 5) {
+  animation-delay: 160ms;
+}
+
+/* Estadisticas de certeza. Las tres tarjetas usan .info-card, el reparto y el
+   ranking reutilizan la pista de .certainty-track, y las barras de frecuencia
+   van en .stats-fill para no leer "certeza alta" donde el dato es "veces". */
+.stats-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+  gap: var(--gap);
+}
+
+/* La cifra usa las cifras tabulares de la barra de certeza: son numeros que se
+   comparan entre si en vertical, y una sans de ancho variable los descentra. */
+.stat-tile {
+  display: grid;
+  gap: 6px;
+  padding: var(--card-pad);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-pill);
+}
+
+.stat-label {
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.stat-value {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stats-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+  align-items: baseline;
+}
+
+/* La pista ocupa la fila completa debajo del par etiqueta/conteo, asi que el
+   grid la manda a la siguiente linea sin tener que partirla en dos columnas. */
+.stats-row .certainty-track {
+  grid-column: 1 / -1;
+}
+
+.stats-top-row {
+  display: grid;
+  gap: 6px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.stats-list--top > .stats-top-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.stats-top-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.stats-top-name {
+  font-weight: 600;
+}
+
+.stats-top-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Frecuencia, no certeza: el color de la paleta de certeza diria "que tan
+   segura es esta falla", que es otro numero y no el que codifica la barra. */
+.stats-fill {
+  background: var(--accent-text);
 }
 
 /* La app anima transiciones en botones, campos y el enlace de salto. Con la

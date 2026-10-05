@@ -12,6 +12,35 @@ export function urgenciaClase(u) {
   return u === 'Crítica' || u === 'Alta' ? 'high' : u === 'Media' ? 'medium' : 'low';
 }
 
+// La búsqueda tiene que funcionar con y sin tildes: el taller escribe rápido y
+// "perdida" tiene que encontrar "Pérdida de potencia", no devolver una lista
+// vacía. normalize('NFD') separa la tilde de la vocal, y al quitar las marcas
+// combinantes (\p{M}, la categoría Unicode Mark) queda la vocal desnuda. Se usa
+// \p{M} y no un rango literal de diacríticos para que cubra también Ñ y Ü y lo
+// que se añada al catálogo después, sin editar la función.
+//
+// La eñe es el único caso que NFD no resuelve: U+00F1 no tiene descomposición
+// canónica, así que "danada" y "dañada" siguen siendo cadenas distintas
+// ("Junta homocinética dañada") y hay que igualarlas a mano.
+function normalizar(texto) {
+  return String(texto)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/ñ/g, 'n');
+}
+
+// Todos los tokens tienen que aparecer, no solo uno: "pastillas freno" tiene que
+// encontrar "Pastillas de freno" sin depender del orden ni de las palabras de en
+// medio. Una consulta vacía devuelve true para no dejar la lista en blanco
+// mientras el usuario ni ha escrito nada.
+export function coincide(haystack, consulta) {
+  const tokens = normalizar(consulta).split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const h = normalizar(haystack);
+  return tokens.every((t) => h.includes(t));
+}
+
 // Cortes de certeza diagnostica. Son espejo de etiqueta_certeza/2 en
 // motor_inferencia.pl:954-956, que el motor ya aplica para su salida de consola
 // pero no exporta al JSON. Si se mueven alla, hay que moverlos aqui.

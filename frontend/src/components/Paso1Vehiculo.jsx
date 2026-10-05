@@ -115,7 +115,7 @@ export default function Paso1Vehiculo({ onRegistrar }) {
                     (que el formulario rechazaría) o inventar uno. */}
                 <small id="anio-help" className="field-hint">
                   Escribe <strong>0</strong> si no lo conoces: es lo mismo que "no lo sé". El
-                  sistema seguirá usando las 20 fallas generales, pero omitirá las 34 que dependen
+                  sistema seguirá usando las 19 fallas generales, pero omitirá las 35 que dependen
                   de marca, modelo y año.
                 </small>
                 {errorAnio && (

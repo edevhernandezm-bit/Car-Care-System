@@ -151,6 +151,21 @@ after(async () => {
   rmSync(directorioLogs, { recursive: true, force: true });
 });
 
+test('00 | API stats/certeza: una base vacia no inventa un promedio de 0', async () => {
+  // Va primero a proposito: el `before` hace dropDatabase(), asi que esta es la
+  // unica ventana en la que la coleccion esta garantizadamente vacia. Con
+  // `|| 0` el endpoint devolvia certeza_promedio_global: 0 aqui, y la vista lo
+  // pintaba como "certeza media 0%, nivel Bajo" al lado de un contador de
+  // consultas real: una medicion que el sistema nunca hizo. Lo que no se midio
+  // es null, y el cliente lo muestra como "No disponible".
+  const stats = await (await fetch(`${API_URL}/api/stats/certeza`)).json();
+
+  assert.equal(stats.total_consultas, 0, 'la base arranca vacia');
+  assert.equal(stats.total_fallas_inferidas, 0);
+  assert.deepEqual(stats.por_falla, []);
+  assert.equal(stats.certeza_promedio_global, null, 'sin fallas no hay promedio, no un 0');
+});
+
 test('01 | MongoDB: la BD de prueba responde y acepta escrituras', async () => {
   const require = createRequire(import.meta.url);
   const m = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
@@ -217,6 +232,61 @@ test('03 | API diagnósticos: validación (400 ante datos inválidos, sin filtra
   );
 });
 
+test('03b | API diagnósticos: la certeza acepta 0 (lo emite el motor al redondear) y rechaza lo que se sale', async () => {
+  // El motor redondea la certeza a dos decimales (motor_inferencia.pl:932), asi
+  // que una regla por debajo de 0.005 sale como 0.0 en el JSON. Con el intervalo
+  // en (0, 1] ese diagnostico legitimo llegaba al backend y se rechazaba con
+  // 400, perdiendose entero. El 0 se acepta; lo que sigue fuera de rango, no.
+  const post = (certeza) =>
+    fetch(`${API_URL}/api/diagnosticos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        vehiculo: { marca: 'gen', modelo: 'gen', anio: 0 },
+        sintomas: ['ruido_motor'],
+        fallas: [{ falla: 'aceite_motor_bajo', certeza }],
+      }),
+    });
+
+  // Los tres valores del intervalo cerrado [0, 1] se guardan. Los extremos
+  // cuentan: 0 es lo que emite el motor al redondear, y 1 es una certeza
+  // legitima que el limite superior todavia tiene que dejar pasar.
+  for (const certeza of [0, 0.005, 1]) {
+    const res = await post(certeza);
+    assert.equal(res.status, 201, `certeza ${certeza} esta en [0, 1] y debe guardarse`);
+    const doc = await res.json();
+    assert.equal(doc.fallas[0].certeza, certeza, 'la certeza debe persistirse tal cual, sin convertirse en null');
+  }
+
+  // Lo que se sale del intervalo, no. El 99 es el caso que motiva el limite
+  // superior: sin el, envenenaria los promedios de /api/stats/certeza.
+  for (const certeza of [-0.1, 1.1, 99]) {
+    const res = await post(certeza);
+    assert.equal(res.status, 400, `certeza ${certeza} debe rechazarse con 400`);
+
+    const cuerpo = await res.json();
+    assert.ok(cuerpo.error, `certeza ${certeza} debe devolver un mensaje de error`);
+    assert.doesNotMatch(
+      JSON.stringify(cuerpo),
+      /Path "fallas|ValidationError|at Object\.|node_modules/,
+      'el rechazo tampoco debe filtrar detalles internos'
+    );
+  }
+
+  // Una certeza ausente no se rellena: se rechaza, para que quede en el log en
+  // vez de guardarse como 0 y pasar por una medicion real.
+  const sinCerteza = await fetch(`${API_URL}/api/diagnosticos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      vehiculo: { marca: 'gen', modelo: 'gen', anio: 0 },
+      sintomas: ['ruido_motor'],
+      fallas: [{ falla: 'aceite_motor_bajo' }],
+    }),
+  });
+  assert.equal(sinCerteza.status, 400, 'una certeza ausente debe rechazarse, no rellenarse con 0');
+});
+
 test('04 | API diagnósticos: se guarda y se lista el historial', async () => {
   const payload = {
     vehiculo: { marca: 'honda', modelo: 'civic', anio: 2015 },
@@ -260,6 +330,58 @@ test('05 | API stats/certeza: refleja las fallas guardadas', async () => {
   assert.ok(pastillas.veces >= 1);
   assert.equal(pastillas.certeza_promedio, 0.72);
   assert.ok(stats.total_fallas_inferidas >= 1);
+
+  // Con fallas guardadas el promedio global si es un numero real en su rango.
+  // El contrato tiene las dos caras: null cuando no hay nada que promediar (test
+  // 00), numero en [0, 1] cuando si. Lo que no puede salir es un 0 de relleno
+  // haciendose pasar por una certeza medida.
+  assert.equal(
+    typeof stats.certeza_promedio_global,
+    'number',
+    'con fallas guardadas el promedio global debe ser un numero'
+  );
+  assert.ok(
+    stats.certeza_promedio_global >= 0 && stats.certeza_promedio_global <= 1,
+    `el promedio global debe estar en [0, 1], vino ${stats.certeza_promedio_global}`
+  );
+
+  // total_consultas cuenta diagnósticos, no entradas de falla. Lo que lo
+  // distingue es una consulta que no infirió nada, y no es un caso sintético:
+  // el cliente guarda el diagnóstico aunque el motor no devuelva fallas
+  // (guardarDiagnostico con fallas: []).
+  const antes = stats;
+  await fetch(`${API_URL}/api/diagnosticos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      vehiculo: { marca: 'gen', modelo: 'gen', anio: 0 },
+      sintomas: ['ruido_motor'],
+      fallas: [],
+    }),
+  });
+
+  const despues = await (await fetch(`${API_URL}/api/stats/certeza`)).json();
+  assert.equal(
+    despues.total_consultas,
+    antes.total_consultas + 1,
+    'una consulta que no infirió ninguna falla también es una consulta'
+  );
+  assert.equal(
+    despues.total_fallas_inferidas,
+    antes.total_fallas_inferidas,
+    'una consulta sin fallas no debe sumar fallas inferidas'
+  );
+
+  // El promedio global se redondea a dos decimales igual que el promedio por
+  // falla. Se comprueba sobre el texto porque multiplicar por 100 y comparar
+  // contra un entero sale falso por la representacion binaria del punto flotante
+  // (0.61 * 100 da 60.99999999999999).
+  const rendered = String(despues.certeza_promedio_global);
+  const decimales = rendered.includes('.') ? rendered.split('.')[1].length : 0;
+  assert.ok(
+    decimales <= 2,
+    `certeza_promedio_global debe venir a dos decimales, vino ${rendered}`
+  );
 });
 
 test('06 | Motor Prolog: casos oráculo vía HTTP', async () => {
@@ -439,13 +561,30 @@ test('10 | React/Vite: index y sistema experto (asíncrono vía Prolog)', async 
   // el código cambie de archivo.
   const appJsx = await (await fetch(`${WEB_URL}/src/App.jsx`)).text();
   const apiJs = await (await fetch(`${WEB_URL}/src/lib/api.js`)).text();
-  const fuenteFrontend = `${appJsx}\n${apiJs}`;
+  // MotorBanner entra en el mismo escaneo por una razón concreta: la última vez que
+  // el cliente dejó de hablar directo con el motor, este archivo se quedó con el
+  // puerto de Prolog hardcodeado y con un comando `swipl` que el repo ya no usa.
+  // Al no estar en la lista, el aviso de "motor no disponible" siguió mostrando
+  // instrucciones de la arquitectura que se había reemplazado. Revisar solo App.jsx
+  // y api.js dejaba el hueco donde se escondió.
+  const bannerJsx = await (
+    await fetch(`${WEB_URL}/src/components/MotorBanner.jsx`)
+  ).text();
+  const fuenteFrontend = `${appJsx}\n${apiJs}\n${bannerJsx}`;
 
   assert.match(fuenteFrontend, /Análisis de Fallas/);
   assert.match(fuenteFrontend, /api\/sintomas/);
   assert.match(fuenteFrontend, /api\/fallas/);
   assert.match(fuenteFrontend, /api\/diagnostico/);
   assert.doesNotMatch(fuenteFrontend, /baseConocimiento|inferir_fallas/);
+
+  // Ningún archivo del cliente puede apuntar al motor por su puerto: el único camino
+  // es el gateway same-origin de Express.
+  assert.doesNotMatch(
+    fuenteFrontend,
+    /localhost:8000/,
+    'el cliente no debe conocer el puerto del motor; todo pasa por el gateway'
+  );
 });
 
 test('12 | La certeza del frontend usa los mismos cortes que el motor', async () => {

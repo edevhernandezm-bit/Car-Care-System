@@ -3,6 +3,7 @@ import { obtenerTipoCambio } from '../lib/api.js';
 import EstadoVacio from './EstadoVacio.jsx';
 import {
   claseConfianzaDato,
+  coincide,
   convertirCosto,
   etiquetaConfianzaDato,
   etiquetaUrgencia,
@@ -19,7 +20,7 @@ export default function BaseConocimiento({ fallasCatalogo, searchQuery, onLimpia
     retry: 1,
   });
   const filtradas = fallasCatalogo.filter((f) =>
-    `${f.nombre} ${etiquetaUrgencia(f.urgencia)}`.toLowerCase().includes(searchQuery)
+    coincide(`${f.nombre} ${etiquetaUrgencia(f.urgencia)}`, searchQuery)
   );
 
   if (filtradas.length === 0) {
@@ -32,7 +33,7 @@ export default function BaseConocimiento({ fallasCatalogo, searchQuery, onLimpia
         }
         causa={
           searchQuery
-            ? 'La búsqueda solo revisa el nombre de la falla y su urgencia. Prueba con una sola palabra, como "cvt" o "alternador".'
+            ? 'La búsqueda revisa el nombre de la falla y su urgencia, con o sin tildes y con varias palabras a la vez. Prueba con "cvt" o "alternador".'
             : 'No hay fallas registradas. Levanta el servidor de Prolog para cargar el catálogo.'
         }
         accion={
