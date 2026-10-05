@@ -1,15 +1,13 @@
 {
   "name": "frontend",
+  "private": true,
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
   "scripts": {
     "preview": "vite preview",
     "build": "vite build",
     "dev": "vite",
     "test": "node --test \"src/lib/*.test.js\""
   },
-  "keywords": [],
   "type": "module",
   "dependencies": {
     "@tanstack/react-query": "^5.104.0",

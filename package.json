@@ -1,0 +1,11 @@
+{
+  "name": "car-care-system",
+  "private": true,
+  "scripts": {
+    "test": "npm --prefix frontend test && npm --prefix backend test",
+    "test:frontend": "npm --prefix frontend test",
+    "test:e2e": "npm --prefix backend test",
+    "build": "npm --prefix frontend run build",
+    "smoke": "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test.ps1"
+  }
+}

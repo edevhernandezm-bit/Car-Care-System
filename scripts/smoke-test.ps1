@@ -9,8 +9,9 @@
 
     No escribe en la base de datos de desarrollo: las escrituras (persistencia
     e historial) las cubre la suite e2e contra una base desechable. Aqui solo
-    se leen catalogos y se manda un POST invalido a proposito, para comprobar
-    el 400, que no llega a persistir nada.
+    se manda un POST invalido a proposito, para comprobar el 400 a traves del
+    proxy, que no llega a persistir nada. El catalogo, el diagnostico del motor,
+    el historial y el CORS ya los cubre la suite e2e, asi que no se repiten.
 
     Al terminar apaga lo que levanto, salvo que se pase -Mantener.
 
@@ -101,27 +102,6 @@ try {
     $indice = Invoke-Api "$Web/"
     Check 'GET / sirve la pagina' ($indice.Status -eq 200 -and $indice.Raw -match '<div id="root">') "status $($indice.Status)"
 
-    $sintomas = Invoke-Api "$Web/api/prolog/api/sintomas"
-    Check 'Vite -> Express -> Prolog entrega el catalogo' ($sintomas.Status -eq 200 -and $sintomas.Json.status -eq 'success') "status $($sintomas.Status)"
-    Check 'el catalogo llega completo' ($sintomas.Json.sintomas.Count -eq 38) "sintomas=$($sintomas.Json.sintomas.Count)"
-
-    $fallas = Invoke-Api "$Web/api/prolog/api/fallas"
-    Check 'el catalogo de fallas tambien llega' ($fallas.Status -eq 200 -and $fallas.Json.fallas.Count -gt 0) "fallas=$($fallas.Json.fallas.Count)"
-
-    $diag = Invoke-Api "$Web/api/prolog/api/diagnostico" 'POST' @{
-        marca       = 'honda'
-        modelo      = 'civic'
-        anio        = 2015
-        transmision = 'desconocida'
-        sintomas    = @('chirrido_al_frenar', 'pedal_freno_esponjoso')
-    }
-    Check 'el gateway responde el diagnostico' ($diag.Status -eq 200 -and $diag.Json.status -eq 'success') "status $($diag.Status)"
-
-    $inferida = @($diag.Json.fallas | Where-Object { $_.id -eq 'sistema_frenos_con_aire' })
-    Check 'el motor infiere la falla con la certeza del oraculo' `
-        ($inferida.Count -eq 1 -and [math]::Abs($inferida[0].certeza - 0.87) -lt 1e-9) `
-        "certeza=$($inferida[0].certeza)"
-
     Write-Host ''
     Write-Host '== 4. La API responde y valida =='
 
@@ -129,9 +109,9 @@ try {
     Check 'el tipo de cambio es positivo' ($cambio.Status -eq 200 -and $cambio.Json.usd_mxn -gt 0) `
         "fuente=$($cambio.Json.fuente) usd_mxn=$($cambio.Json.usd_mxn)"
 
-    $historial = Invoke-Api "$Web/api/diagnosticos"
-    Check 'el historial se lee sin error' ($historial.Status -eq 200) "status $($historial.Status)"
-
+    # Catalogo, POST del motor, historial y CORS los cubre la suite e2e
+    # (pruebas 07/08/09, 06/11, 04 y 09) contra una base desechable. Aqui solo
+    # queda el camino que la e2e no mira: el 400 a traves del proxy de Vite.
     $invalido = Invoke-Api "$Web/api/diagnosticos" 'POST' @{
         vehiculo = @{ marca = 'x'; modelo = 'x'; anio = 0 }
         sintomas = @()
@@ -139,17 +119,6 @@ try {
     }
     Check 'una certeza fuera de rango se rechaza con 400' ($invalido.Status -eq 400) "status $($invalido.Status)"
     Check 'el 400 no filtra el detalle del schema' ($invalido.Raw -notmatch 'Path "|ValidationError') $invalido.Raw
-
-    Write-Host ''
-    Write-Host '== 5. Aislamiento y CORS =='
-
-    $permitido = Invoke-Api "$Web/api/config/tipo-cambio" 'GET' $null @{ Origin = $Web }
-    Check 'CORS refleja el origen de la app' ($permitido.Headers['Access-Control-Allow-Origin'] -eq $Web) `
-        "$($permitido.Headers['Access-Control-Allow-Origin'])"
-
-    $ajeno = Invoke-Api "$Web/api/config/tipo-cambio" 'GET' $null @{ Origin = 'http://otro.example' }
-    Check 'CORS no habilita un origen ajeno' ($null -eq $ajeno.Headers['Access-Control-Allow-Origin']) `
-        "$($ajeno.Headers['Access-Control-Allow-Origin'])"
 
     $fuente = Invoke-Api "$Web/src/lib/api.js"
     Check 'el cliente ya no llama directo al motor' ($fuente.Raw -notmatch 'localhost:8000')

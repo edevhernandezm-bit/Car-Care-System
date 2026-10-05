@@ -15,11 +15,7 @@ export default function Paso2Sintomas({
     coincide(`${s.nombre} ${s.categoria}`, searchQuery)
   );
 
-  const categorias = {};
-  filtrados.forEach((s) => {
-    if (!categorias[s.categoria]) categorias[s.categoria] = [];
-    categorias[s.categoria].push(s);
-  });
+  const categorias = Object.groupBy(filtrados, (s) => s.categoria);
 
   return (
     <div className="diagnostico-container">

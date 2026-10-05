@@ -55,10 +55,6 @@ app.use(
   })
 );
 app.use(express.json({ limit: '1mb' }));
-app.use((req, res, next) => {
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  next();
-});
 
 mongoose
   .connect(MONGO_URI)
@@ -131,7 +127,7 @@ async function tasaDesdeMongo() {
     };
   }
   // Sin semilla: se crea con la constante para que exista un respaldo en BD.
-  const fecha = new Date().toISOString().slice(0, 10);
+  const fecha = hoyISO();
   await Config.updateOne(
     { clave: 'tipo_cambio_usd_mxn' },
     { $setOnInsert: { valor: TIPO_CAMBIO_FALLBACK, fecha, fuente: 'constante', actualizado_en: new Date() } },
@@ -380,7 +376,7 @@ app.use((err, _req, res, _next) => {
     return res.status(400).json({ error: 'Datos inválidos' });
   }
 
-  const status = err.status || err.statusCode || 500;
+  const status = err.status || 500;
   if (status >= 500) {
     console.error(`[error ${status}]`, err);
     return res.status(status).json({ error: 'Error interno del servidor' });

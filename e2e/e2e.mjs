@@ -157,7 +157,7 @@ test('00 | API stats/certeza: una base vacia no inventa un promedio de 0', async
   // `|| 0` el endpoint devolvia certeza_promedio_global: 0 aqui, y la vista lo
   // pintaba como "certeza media 0%, nivel Bajo" al lado de un contador de
   // consultas real: una medicion que el sistema nunca hizo. Lo que no se midio
-  // es null, y el cliente lo muestra como "No disponible".
+  // es null, y el cliente lo muestra como "Sin dato".
   const stats = await (await fetch(`${API_URL}/api/stats/certeza`)).json();
 
   assert.equal(stats.total_consultas, 0, 'la base arranca vacia');
