@@ -89,13 +89,17 @@ export default function FallaForm({
   // sintoma propio aparecia marcado como si fuera del catalogo, y desmarcar esa
   // casilla lo borraba de verdad.
   const sintomasMarcados = new Set(valor.sintomas);
-  const delCatalogo = (sintomasCatalogo || []).filter((s) => !sintomasMarcados.has(s.nombre));
   const propios = valor.sintomas.filter(
     (s) => !(sintomasCatalogo || []).some((c) => c.nombre === s)
   );
+  // El catalogo muestra todas las casillas, marcadas o no: filtrar las ya
+  // marcadas hacia que cada clic eliminara la tarjeta y la rejilla auto-fill
+  // se reacomodara toda (jump/encimado), ademas de impedir desmarcar.
   const filtrados = filtroSintomas
-    ? delCatalogo.filter((s) => coincide(`${s.nombre} ${s.categoria}`, filtroSintomas))
-    : delCatalogo;
+    ? (sintomasCatalogo || []).filter((s) =>
+        coincide(`${s.nombre} ${s.categoria}`, filtroSintomas)
+      )
+    : sintomasCatalogo || [];
 
   function alternar(nombre, marcado) {
     onCambio({

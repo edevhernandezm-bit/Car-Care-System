@@ -642,7 +642,10 @@ h4 {
   padding: 0;
 }
 
-.form-grid label {
+/* `:not(.checkbox-item)` scopes these to field labels: the symptom cards are
+   <label> too, and the grid/versalitas styling hit them, breaking their flex
+   layout and inflating the text when long names wrapped. */
+.form-grid label:not(.checkbox-item) {
   display: grid;
   gap: 8px;
   min-width: 0;
@@ -652,7 +655,7 @@ h4 {
 
 /* El nombre del campo es un rotulo corto de placa: display condensada en
    versalitas. El color lo pone el label, asi que aqui solo la forma. */
-.form-grid label > span {
+.form-grid label:not(.checkbox-item) > span {
   font-family: var(--font-display);
   font-size: 0.82rem;
   font-weight: 600;
@@ -954,6 +957,10 @@ h4 {
 .sintomas-checklist {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(250px, 100%), 1fr));
+  /* Las filas implicitas miden lo que su contenido: sin esto un sintoma largo
+     (2-3 lineas envueltas) deja la fila en los 44px del min-height de la
+     tarjeta, la tarjeta no crece y el texto se sale por debajo del borde. */
+  grid-auto-rows: max-content;
   gap: 8px;
 }
 
@@ -1065,6 +1072,21 @@ h4 {
 .checkbox-item span {
   font-weight: 500;
   min-width: 0;
+}
+
+/* El texto de cada sintoma nunca debe forzar el ancho de su tarjeta ni pintar
+   fuera de ella: como flex item encoge (flex: 1 1 auto) y rompe aunque falte
+   un espacio (nombres con parentesis, barras o palabras largas), en cualquier
+   resolucion. Vale igual para el checklist del diagnostico (Paso 2) y el de
+   administracion, que comparten .sintomas-checklist. */
+.sintomas-checklist .checkbox-item {
+  min-width: 0;
+}
+
+.sintomas-checklist .checkbox-item span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* El bloque de codigo va dentro de una .info-card, que ya es --surface: con
@@ -1611,6 +1633,16 @@ h4 {
   }
 }
 
+/* Ventanas estrechas (media pantalla o menos): las columnas del checklist bajan
+   su minimo para que no se aprieten en filas de 250px estaticas; a pantalla
+   completa se mantiene el minimo original. El quiebre del texto lo garantiza
+   `.sintomas-checklist .checkbox-item span`. */
+@media (max-width: 720px) {
+  .sintomas-checklist {
+    grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr));
+  }
+}
+
 @media (max-width: 420px) {
   :root {
     --card-pad: 15px;
@@ -1894,10 +1926,21 @@ h4 {
 .admin-sintomas-lista {
   max-height: 320px;
   overflow-y: auto;
+  /* Guarda: nada de lo que quepa mal en una columna pinta fuera del borde de
+     la lista. `hidden` como respaldo y `clip` cuando el navegador lo soporta
+     (el contenedor ya es scrollable por el eje Y, asi que `hidden` no introduce
+     un scroll horizontal). */
+  overflow-x: hidden;
+  overflow-x: clip;
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-input);
 }
+
+/* El checklist de sintomas del formulario de fallas comparte estilos con el
+   del Paso 2 y NO necesita refuerzo local: el scoping de `.form-grid label`
+   con `:not(.checkbox-item)` impide que las tarjetas hereden el grid/versalitas,
+   y el quiebre se cubre globalmente en `.sintomas-checklist .checkbox-item span`. */
 
 .admin-propios {
   display: grid;
@@ -1916,6 +1959,11 @@ h4 {
   border: 1px solid var(--border);
   border-radius: var(--radius-input);
   background: var(--surface-sunken);
+}
+
+.admin-propios li > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .admin-sintoma-nuevo {
