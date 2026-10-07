@@ -2,7 +2,7 @@
   "name": "car-care-system",
   "private": true,
   "scripts": {
-    "setup": "npm --prefix backend install && npm --prefix frontend install",
+    "setup": "powershell -ExecutionPolicy Bypass -File scripts\\setup.ps1",
     "test": "npm --prefix frontend test && npm --prefix backend test",
     "test:frontend": "npm --prefix frontend test",
     "test:e2e": "npm --prefix backend test",

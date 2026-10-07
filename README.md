@@ -24,7 +24,8 @@ usuario y rol).
 | SWI-Prolog | 8 o superior | Si no esta en el PATH, define `SWIPL` con la ruta a `swipl.exe` |
 | MongoDB | 6 o superior | Se espera en `mongodb://localhost:27017/car_care_system` |
 
-Instala dependencias una sola vez:
+Instala dependencias una sola vez (comprueba `node`/`npm`, instala backend y
+frontend, y avisa si falta SWI-Prolog o MongoDB):
 
 ```bash
 npm run setup
