@@ -84,6 +84,20 @@ before(async () => {
     return createWriteStream(null, { fd: openSync(logPath(`${nombre}.${sufijo}.log`), 'w') });
   }
 
+  // La base se vacia ANTES de levantar los servicios, no despues. La API hace
+  // bootstrap de las fallas de Mongo hacia Prolog al arrancar: si la base todavia
+  // guardara datos del run anterior, esas fallas se afirmarian en el motor recien
+  // estrenado y contaminarian desde el primer test los catalogos y los
+  // diagnosticos (los conteos de 38/54 salian en 39/55 con una falla fantasma).
+  // Vaciar antes tambien es lo unico que deja el estado inicial igual al de una
+  // base nueva, porque despues el harness ya no puede tocar la base sin
+  // reiniciar el motor.
+  const require = createRequire(import.meta.url);
+const mongoose = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
+  await mongoose.connect(TEST_DB);
+  await mongoose.connection.dropDatabase();
+  await mongoose.disconnect();
+
   prologProc = spawn(SWIPL, ['-q', '-f', PL_FILE, '-g', `server(${PUERTO_PROLOG}), sleep(3600)`, '-t', 'halt'], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -131,12 +145,6 @@ before(async () => {
     },
   });
   await sondeo(`${WEB_URL}/`, { timeout: 90000 });
-
-  const require = createRequire(import.meta.url);
-  mongoose = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
-  await mongoose.connect(TEST_DB);
-  await mongoose.connection.dropDatabase();
-  await mongoose.disconnect();
 });
 
 after(async () => {
@@ -647,4 +655,796 @@ test('11 | Flujo integrado: React(proxy) → backend → Mongo → stats', async
 
   const historial = await (await fetch(`${WEB_URL}/api/diagnosticos`)).json();
   assert.ok(historial.some((d) => d.vehiculo.marca === 'honda' && d.fallas?.some((f) => f.falla === infere.id)));
+});
+
+// ---------------------------------------------------------------------------
+// FASE 6: sesion, roles y CRUD de administracion.
+//
+// Estas pruebas necesitan una sesion real, y `fetch` de Node no conserva cookies
+// entre llamadas: hay que leer el Set-Cookie del ingreso y reenviarlo a mano en
+// cada peticion. Por eso viven en `api()` en vez de llamar a fetch directo.
+//
+// El primer administrador se inserta en Mongo directamente, no por la API: la
+// API exige rol de administrador para crear cuentas, asi que a traves de ella no
+// habria forma de arrancar. Es exactamente lo que hace el seed del arranque, y el
+// `before` borro la base despues, asi que aqui no queda ninguno.
+// ---------------------------------------------------------------------------
+async function api(ruta, { method = 'GET', body, cookie } = {}) {
+  const res = await fetch(`${API_URL}${ruta}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const texto = await res.text();
+  let json = null;
+  try {
+    json = JSON.parse(texto);
+  } catch {
+    // Un cuerpo no-JSON (por ejemplo el HTML de error de Express) se entrega en
+    // `texto`; las aserciones pueden mirarlo sin que el test se caiga aqui.
+  }
+  // La sesion deja una sola cookie, asi que basta con el par nombre=valor; los
+  // atributos (Path, HttpOnly, SameSite) no viajan en la peticion.
+  const setCookie = res.headers.get('set-cookie') || '';
+  return {
+    status: res.status,
+    body: json,
+    texto,
+    cookie: setCookie ? setCookie.split(';')[0] : null,
+  };
+}
+
+async function usuarioEnMongo({ username, password, role, nombre }) {
+  const require = createRequire(import.meta.url);
+  const m = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
+  const bcrypt = require(path.join(BACKEND_DIR, 'node_modules', 'bcryptjs'));
+
+  await m.connect(TEST_DB);
+  try {
+    const passwordHash = await bcrypt.hash(password, 10);
+    const ahora = new Date();
+    await m.connection.collection('users').updateOne(
+      { username },
+      { $set: { username, passwordHash, role, nombre, activo: true, updatedAt: ahora } },
+      { upsert: true }
+    );
+    const doc = await m.connection.collection('users').findOne({ username });
+    return doc._id.toString();
+  } finally {
+    await m.disconnect();
+  }
+}
+
+async function idDeUsuarioEnMongo(username) {
+  const require = createRequire(import.meta.url);
+  const m = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
+  await m.connect(TEST_DB);
+  try {
+    const doc = await m.connection.collection('users').findOne({ username });
+    return doc._id.toString();
+  } finally {
+    await m.disconnect();
+  }
+}
+
+// Las pruebas del último administrador necesitan saber cuántos hay, así que
+// vacían la colección en vez de contar con lo que dejaron los tests anteriores.
+async function limpiarUsuarios() {
+  const require = createRequire(import.meta.url);
+  const m = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
+  await m.connect(TEST_DB);
+  try {
+    await m.connection.collection('users').deleteMany({});
+  } finally {
+    await m.disconnect();
+  }
+}
+
+const FALLA_VALIDA = {
+  nombre: 'Fuga de refrigerante e2e',
+  sintomas: ['aire_acondicionado_no_enfria'],
+  vehiculo: { marca: 'honda', modelo: 'civic', anio: 2015, transmision: 'cvt' },
+  causas: ['Válvula de expansión con fuga'],
+  solucion: 'Sustituir la válvula de expansión y recargar refrigerante.',
+  procedimiento: ['Medir presión', 'Localizar la fuga', 'Sustituir y recargar'],
+  precioMin: 1200,
+  precioMax: 3500,
+  urgencia: 'media',
+  confianzaDato: 'media',
+  certezaBase: 0.7,
+};
+
+test('13 | Sesión: sin cookie, las rutas de administración responden 401', async () => {
+  const escritura = await api('/api/fallas', { method: 'POST', body: FALLA_VALIDA });
+  assert.equal(escritura.status, 401, 'crear una falla sin sesión debe ser 401');
+
+  const lectura = await api('/api/usuarios');
+  assert.equal(lectura.status, 401, 'leer usuarios sin sesión debe ser 401');
+
+  const me = await api('/api/auth/me');
+  assert.equal(me.status, 401, '/api/auth/me sin sesión debe ser 401');
+});
+
+test('14 | Sesión: credenciales incorrectas no dicen qué parte falló', async () => {
+  await usuarioEnMongo({
+    username: 'admin_e2e',
+    password: 'clave-admin-e2e',
+    role: 'administrador_mecanico',
+    nombre: 'Admin E2E',
+  });
+
+  const malo = await api('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin_e2e', password: 'incorrecta' },
+  });
+  assert.equal(malo.status, 401);
+  const inexistente = await api('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'no_existe_e2e', password: 'incorrecta' },
+  });
+  assert.equal(inexistente.status, 401);
+  // Mismo mensaje para usuario inexistente y para contraseña incorrecta: si
+  // difirieran, confirmarian si ese usuario existe.
+  assert.equal(malo.body.error, inexistente.body.error);
+
+  const bueno = await api('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin_e2e', password: 'clave-admin-e2e' },
+  });
+  assert.equal(bueno.status, 200);
+  assert.equal(bueno.body.role, 'administrador_mecanico');
+  assert.ok(bueno.cookie, 'el ingreso debe establecer la cookie de sesión');
+  assert.match(bueno.cookie, /^connect\.sid=/, 'la cookie debe ser la de sesión');
+
+  const me = await api('/api/auth/me', { cookie: bueno.cookie });
+  assert.equal(me.status, 200);
+  assert.equal(me.body.username, 'admin_e2e');
+  assert.equal(me.body.role, 'administrador_mecanico');
+  assert.ok(!('passwordHash' in me.body), 'la sesión no debe incluir el hash');
+
+  const salida = await api('/api/auth/logout', { method: 'POST', cookie: bueno.cookie });
+  assert.equal(salida.status, 200);
+  const meTrasSalir = await api('/api/auth/me', { cookie: bueno.cookie });
+  assert.equal(meTrasSalir.status, 401, 'tras cerrar sesión la cookie debe morir');
+});
+
+test('15 | Roles: el estudiante lee pero no escribe, aunque el botón no exista en la web', async () => {
+  await usuarioEnMongo({
+    username: 'estudiante_e2e',
+    password: 'clave-estudiante-e2e',
+    role: 'estudiante_mecanica',
+    nombre: 'Estudiante E2E',
+  });
+  const ingreso = await api('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'estudiante_e2e', password: 'clave-estudiante-e2e' },
+  });
+  assert.equal(ingreso.status, 200);
+  const cookie = ingreso.cookie;
+
+  const lectura = await api('/api/diagnosticos', { cookie });
+  assert.equal(lectura.status, 200, 'el estudiante sí puede usar las funciones base');
+
+  for (const [ruta, opciones] of [
+    ['/api/fallas', { method: 'POST', body: FALLA_VALIDA }],
+    ['/api/usuarios', { method: 'POST', body: { username: 'x_e2e', password: 'y' } }],
+  ]) {
+    const r = await api(ruta, { ...opciones, cookie });
+    assert.equal(r.status, 403, `${ruta} debe rechazar al estudiante con 403`);
+  }
+});
+
+test('16 | Fallas: ciclo completo del administrador y el hash nunca sale de la colección de usuarios', async () => {
+  await usuarioEnMongo({
+    username: 'admin_ciclo',
+    password: 'clave-ciclo',
+    role: 'administrador_mecanico',
+    nombre: 'Admin Ciclo',
+  });
+  const { cookie } = await api('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin_ciclo', password: 'clave-ciclo' },
+  });
+  assert.ok(cookie);
+
+  const creada = await api('/api/fallas', {
+    method: 'POST',
+    cookie,
+    body: { ...FALLA_VALIDA, nombre: 'Fuga de refrigerante ciclo' },
+  });
+  assert.equal(creada.status, 201);
+  assert.equal(creada.body.prologId, 'fuga_de_refrigerante_ciclo');
+  assert.equal(creada.body.activo, true);
+
+  const duplicada = await api('/api/fallas', {
+    method: 'POST',
+    cookie,
+    body: { ...FALLA_VALIDA, nombre: 'Fuga de refrigerante ciclo' },
+  });
+  assert.equal(duplicada.status, 409, 'el mismo prologId vivo debe dar 409');
+
+  const invalida = await api('/api/fallas', {
+    method: 'POST',
+    cookie,
+    body: { ...FALLA_VALIDA, nombre: 'Precio invertido', precioMin: 9000, precioMax: 100 },
+  });
+  assert.equal(invalida.status, 400, 'precio mínimo mayor que el máximo debe rechazarse');
+  assert.ok(invalida.body.error);
+
+  const listado = await api('/api/fallas', { cookie });
+  assert.equal(listado.status, 200);
+  assert.ok(listado.body.some((f) => f._id === creada.body._id));
+  assert.ok(
+    listado.body.find((f) => f._id === creada.body._id).creadoPor?.username === 'admin_ciclo',
+    'la lista debe rellenar quién registró la falla'
+  );
+
+  const editada = await api(`/api/fallas/${creada.body._id}`, {
+    method: 'PUT',
+    cookie,
+    body: { ...FALLA_VALIDA, nombre: 'Fuga de refrigerante ciclo', precioMin: 1500, precioMax: 4000 },
+  });
+  assert.equal(editada.status, 200);
+  assert.equal(editada.body.precioMin, 1500);
+
+  const borrada = await api(`/api/fallas/${creada.body._id}`, { method: 'DELETE', cookie });
+  assert.equal(borrada.status, 200);
+
+  // Soft delete: el documento sigue existiendo, marcado como no activo. Sin esto
+  // el historial de diagnósticos apuntaría a fallas que ya no se pueden leer.
+  const conBorradas = await api('/api/fallas?includeDeleted=true', { cookie });
+  const fila = conBorradas.body.find((f) => f._id === creada.body._id);
+  assert.ok(fila, 'la falla borrada debe seguir en la colección');
+  assert.equal(fila.activo, false);
+  assert.ok(fila.deletedAt, 'el borrado lógico debe dejar constancia de la fecha');
+
+  const soloVivas = await api('/api/fallas', { cookie });
+  assert.ok(!soloVivas.body.some((f) => f._id === creada.body._id), 'no debe listarse entre las vivas');
+
+  const usuarios = await api('/api/usuarios', { cookie });
+  assert.doesNotMatch(usuarios.texto, /passwordHash|\$2[aby]\$/, 'el hash no puede aparecer en la lista de usuarios');
+});
+
+test('17 | Índice parcial: una falla borrada deja libre su prologId', async () => {
+  // Con el indice unico global, este ciclo terminaba en un 500 de clave duplicada:
+  // borrar logicamente no liberaba el identificador, y volver a capturar la misma
+  // falla (se creo, se elimino por error, se vuelve a capturar) era imposible.
+  await usuarioEnMongo({
+    username: 'admin_indice',
+    password: 'clave-indice',
+    role: 'administrador_mecanico',
+    nombre: 'Admin Indice',
+  });
+  const { cookie } = await api('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin_indice', password: 'clave-indice' },
+  });
+
+  const nombre = 'Fuga de refrigerante reuso';
+  const primera = await api('/api/fallas', {
+    method: 'POST',
+    cookie,
+    body: { ...FALLA_VALIDA, nombre },
+  });
+  assert.equal(primera.status, 201);
+
+  const borrado = await api(`/api/fallas/${primera.body._id}`, { method: 'DELETE', cookie });
+  assert.equal(borrado.status, 200);
+
+  const segunda = await api('/api/fallas', {
+    method: 'POST',
+    cookie,
+    body: { ...FALLA_VALIDA, nombre },
+  });
+  assert.equal(segunda.status, 201, 'recrear una falla borrada debe funcionar');
+  assert.notEqual(segunda.body._id, primera.body._id, 'es un documento nuevo, no el mismo reactivado');
+});
+
+test('18 | Motor Prolog: la falla creada aparece y la borrada desaparece', async () => {
+  await usuarioEnMongo({
+    username: 'admin_motor',
+    password: 'clave-motor',
+    role: 'administrador_mecanico',
+    nombre: 'Admin Motor',
+  });
+  const { cookie } = await api('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin_motor', password: 'clave-motor' },
+  });
+
+  const prologId = 'fuga_de_refrigerante_motor';
+  const creada = await api('/api/fallas', {
+    method: 'POST',
+    cookie,
+    body: { ...FALLA_VALIDA, nombre: 'Fuga de refrigerante motor' },
+  });
+  assert.equal(creada.status, 201);
+
+  // La sincronizacion con el motor es asincrona a proposito (una falla guardada
+  // no espera a Prolog), asi que se sondea en vez de exigirlo en la respuesta.
+  const enMotor = async (id) => {
+    const cuerpo = await (await fetch(`http://localhost:${PUERTO_PROLOG}/api/fallas`)).json();
+    return (cuerpo.fallas || cuerpo).some((f) => f.id === id || f.prologId === id);
+  };
+  let presente = false;
+  for (let i = 0; i < 20 && !presente; i++) {
+    presente = await enMotor(prologId);
+    if (!presente) await sleep(250);
+  }
+  assert.ok(presente, 'la falla creada por el administrador debe llegar al motor');
+
+  const borrada = await api(`/api/fallas/${creada.body._id}`, { method: 'DELETE', cookie });
+  assert.equal(borrada.status, 200);
+
+  let ausente = false;
+  for (let i = 0; i < 20 && !ausente; i++) {
+    ausente = !(await enMotor(prologId));
+    if (!ausente) await sleep(250);
+  }
+  assert.ok(ausente, 'la falla borrada debe salir del motor, no seguir ofrecida');
+});
+
+test('19 | Revocación: degradar o desactivar a un administrador corta su escritura de inmediato', async () => {
+  await usuarioEnMongo({
+    username: 'admin_jefe',
+    password: 'clave-jefe',
+    role: 'administrador_mecanico',
+    nombre: 'Jefe',
+  });
+  await usuarioEnMongo({
+    username: 'admin_subrevocado',
+    password: 'clave-sub',
+    role: 'administrador_mecanico',
+    nombre: 'Sub Revocado',
+  });
+
+  const jefe = (
+    await api('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin_jefe', password: 'clave-jefe' },
+    })
+  ).cookie;
+  const sub = (
+    await api('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin_subrevocado', password: 'clave-sub' },
+    })
+  ).cookie;
+
+  const idSub = await idDeUsuarioEnMongo('admin_subrevocado');
+  const degradado = await api(`/api/usuarios/${idSub}`, {
+    method: 'PUT',
+    cookie: jefe,
+    body: { role: 'estudiante_mecanica' },
+  });
+  assert.equal(degradado.status, 200);
+
+  // La cookie del sub sigue viva y su sesión no cambió, pero la escritura se
+  // rechaza: la autorización relee la cuenta en cada petición, no copia el rol
+  // dentro de la sesión.
+  const escritura = await api('/api/fallas', {
+    method: 'POST',
+    cookie: sub,
+    body: { ...FALLA_VALIDA, nombre: 'No deberia entrar' },
+  });
+  assert.equal(escritura.status, 403, 'un rol degradado no puede escribir con la cookie vieja');
+
+  await api(`/api/usuarios/${idSub}`, { method: 'PUT', cookie: jefe, body: { role: 'administrador_mecanico' } });
+  const desactivado = await api(`/api/usuarios/${idSub}`, { method: 'DELETE', cookie: jefe });
+  assert.equal(desactivado.status, 200);
+
+  const escrituraTrasDesactivar = await api('/api/fallas', {
+    method: 'POST',
+    cookie: sub,
+    body: { ...FALLA_VALIDA, nombre: 'Tampoco deberia entrar' },
+  });
+  assert.equal(escrituraTrasDesactivar.status, 401, 'una cuenta desactivada no puede escribir con la cookie vieja');
+
+  const ingresoDesactivado = await api('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin_subrevocado', password: 'clave-sub' },
+  });
+  assert.equal(ingresoDesactivado.status, 401, 'una cuenta desactivada tampoco puede volver a entrar');
+});
+
+test('20 | Último administrador: ni el jefe puede dejar la instalación sin acceso', async () => {
+  // Se aíslan los administradores de esta prueba: si contaran los que dejaron los
+  // tests anteriores, "degradar al último" no sería el último y el 400 nunca
+  // llegaría.
+  await limpiarUsuarios();
+  await usuarioEnMongo({
+    username: 'admin_unico',
+    password: 'clave-unico',
+    role: 'administrador_mecanico',
+    nombre: 'Unico',
+  });
+  await usuarioEnMongo({
+    username: 'admin_segundo',
+    password: 'clave-segundo',
+    role: 'administrador_mecanico',
+    nombre: 'Segundo',
+  });
+
+  const uno = (
+    await api('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin_unico', password: 'clave-unico' },
+    })
+  ).cookie;
+
+  const idUnico = await idDeUsuarioEnMongo('admin_unico');
+  const idSegundo = await idDeUsuarioEnMongo('admin_segundo');
+
+  // Con dos administradores, cada uno puede dejar de serlo: siempre queda el otro.
+  const primero = await api(`/api/usuarios/${idSegundo}`, {
+    method: 'PUT',
+    cookie: uno,
+    body: { role: 'estudiante_mecanica' },
+  });
+  assert.equal(primero.status, 200);
+
+  // Y ya no puede dejar el último.
+  const ultimo = await api(`/api/usuarios/${idUnico}`, {
+    method: 'PUT',
+    cookie: uno,
+    body: { role: 'estudiante_mecanica' },
+  });
+  assert.equal(ultimo.status, 400, 'no se puede degradar al último administrador');
+  assert.match(ultimo.body.error, /al menos un administrador/i);
+
+  // Lo mismo por la vía de desactivar: es la misma regla, no dos.
+  const desactivado = await api(`/api/usuarios/${idUnico}`, { method: 'DELETE', cookie: uno });
+  assert.equal(desactivado.status, 400);
+
+  const sigueSiendoAdmin = await api(`/api/usuarios/${idUnico}`, {
+    method: 'PUT',
+    cookie: uno,
+    body: { nombre: 'Unico Renombrado' },
+  });
+  assert.equal(sigueSiendoAdmin.status, 200);
+  assert.equal(sigueSiendoAdmin.body.role, 'administrador_mecanico');
+});
+
+test('21 | Dos degradaciones simultáneas no dejan cero administradores', async () => {
+  // El conteo y la escritura del test anterior son dos operaciones separadas: sin
+  // serializarlas, los dosRequests verían "hay otro administrador" a la vez y
+  // ambos pasarían, dejando la instalación sin nadie que pueda entrar.
+  await limpiarUsuarios();
+  await usuarioEnMongo({
+    username: 'admin_a_race',
+    password: 'clave-a',
+    role: 'administrador_mecanico',
+    nombre: 'A',
+  });
+  await usuarioEnMongo({
+    username: 'admin_b_race',
+    password: 'clave-b',
+    role: 'administrador_mecanico',
+    nombre: 'B',
+  });
+
+  const a = (
+    await api('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin_a_race', password: 'clave-a' },
+    })
+  ).cookie;
+  const b = (
+    await api('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin_b_race', password: 'clave-b' },
+    })
+  ).cookie;
+
+  const [respA, respB] = await Promise.all([
+    api(`/api/usuarios/${await idDeUsuarioEnMongo('admin_b_race')}`, {
+      method: 'PUT',
+      cookie: a,
+      body: { role: 'estudiante_mecanica' },
+    }),
+    api(`/api/usuarios/${await idDeUsuarioEnMongo('admin_a_race')}`, {
+      method: 'PUT',
+      cookie: b,
+      body: { role: 'estudiante_mecanica' },
+    }),
+  ]);
+
+  const exitosos = [respA, respB].filter((r) => r.status === 200);
+  assert.equal(
+    exitosos.length,
+    1,
+    'exactamente una de las dos degradaciones simultáneas debe prosperar'
+  );
+
+  // La perdedora no siempre alcanza la guarda del último administrador: si la otra
+  // peticion ya degrado su cuenta antes de que requireAdmin releyera el rol,
+  // requireAdmin la corta antes con 403. Los dos rechazos son correctos; lo que no
+  // puede pasar es que tambien sea un 200, o que el rechazo sea un 5xx.
+  const perdedora = [respA, respB].find((r) => r.status !== 200);
+  assert.ok(
+    perdedora.status === 400 || perdedora.status === 403,
+    `la otra debe recibir 400 (ultimo administrador) o 403 (rol ya degradado), no ${perdedora.status}`
+  );
+
+  const require = createRequire(import.meta.url);
+  const m = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
+  await m.connect(TEST_DB);
+  const vivos = await m.connection.collection('users').countDocuments({
+    role: 'administrador_mecanico',
+    activo: true,
+  });
+  await m.disconnect();
+  assert.ok(vivos >= 1, 'debe quedar al menos un administrador activo');
+});
+
+test('23 | Mi perfil: el estudiante edita nombre y contraseña, no usuario ni rol', async () => {
+  await limpiarUsuarios();
+  await usuarioEnMongo({
+    username: 'est_perfil',
+    password: 'clave-vieja',
+    role: 'estudiante_mecanica',
+    nombre: 'Est Perfil',
+  });
+
+  const cookie = (
+    await api('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'est_perfil', password: 'clave-vieja' },
+    })
+  ).cookie;
+
+  const renombrado = await api('/api/auth/me', {
+    method: 'PUT',
+    cookie,
+    body: { nombre: 'Estudiantina Renovada' },
+  });
+  assert.equal(renombrado.status, 200);
+  assert.equal(renombrado.body.nombre, 'Estudiantina Renovada');
+
+  // Pedir rol de administrador o un usuario nuevo se ignora: un estudiante no
+  // se asciende solo, y la identidad no se toca desde aca.
+  const escalada = await api('/api/auth/me', {
+    method: 'PUT',
+    cookie,
+    body: { nombre: 'N', role: 'administrador_mecanico', username: 'est_hacker' },
+  });
+  assert.equal(escalada.status, 200);
+  assert.equal(escalada.body.role, 'estudiante_mecanica', 'un estudiante no puede autoascenderse');
+  assert.equal(escalada.body.username, 'est_perfil', 'un estudiante no cambia su usuario');
+
+  const conClave = await api('/api/auth/me', {
+    method: 'PUT',
+    cookie,
+    body: { password: 'clave-nueva' },
+  });
+  assert.equal(conClave.status, 200);
+
+  const vieja = await api('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'est_perfil', password: 'clave-vieja' },
+  });
+  assert.equal(vieja.status, 401, 'la contraseña vieja deja de servir');
+
+  const nueva = await api('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'est_perfil', password: 'clave-nueva' },
+  });
+  assert.equal(nueva.status, 200, 'la contraseña nueva abre la sesión');
+});
+
+test('24 | Mi perfil: el administrador cambia usuario y rol, con unicidad y sin autoascenso', async () => {
+  await limpiarUsuarios();
+  await usuarioEnMongo({
+    username: 'admin_perfil',
+    password: 'clave-admin',
+    role: 'administrador_mecanico',
+    nombre: 'Admin Perfil',
+  });
+  await usuarioEnMongo({
+    username: 'admin_perfil_2',
+    password: 'clave-admin2',
+    role: 'administrador_mecanico',
+    nombre: 'Segundo Admin',
+  });
+
+  const cookie = (
+    await api('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin_perfil', password: 'clave-admin' },
+    })
+  ).cookie;
+
+  const renombrado = await api('/api/auth/me', {
+    method: 'PUT',
+    cookie,
+    body: { username: 'admin_renombrado', nombre: 'Admin Renombrado' },
+  });
+  assert.equal(renombrado.status, 200);
+  assert.equal(renombrado.body.username, 'admin_renombrado');
+
+  // La sesion guarda el id, no el nombre: la cookie sigue valida tras renovarse.
+  const me = await api('/api/auth/me', { cookie });
+  assert.equal(me.status, 200);
+  assert.equal(me.body.username, 'admin_renombrado');
+
+  const conflicto = await api('/api/auth/me', {
+    method: 'PUT',
+    cookie,
+    body: { username: 'admin_perfil_2' },
+  });
+  assert.equal(conflicto.status, 409, 'un usuario ya tomado debe rechazarse');
+
+  // Con dos administradores activos, puede degradarse a sí mismo...
+  const degradado = await api('/api/auth/me', {
+    method: 'PUT',
+    cookie,
+    body: { role: 'estudiante_mecanica' },
+  });
+  assert.equal(degradado.status, 200);
+  assert.equal(degradado.body.role, 'estudiante_mecanica');
+
+  // ...pero una vez estudiante, el reascenso pide la misma rama que le toca al
+  // resto: se ignora, no se concede.
+  const reascenso = await api('/api/auth/me', {
+    method: 'PUT',
+    cookie,
+    body: { role: 'administrador_mecanico' },
+  });
+  assert.equal(reascenso.status, 200);
+  assert.equal(reascenso.body.role, 'estudiante_mecanica', 'un estudiante no se autoasciende');
+});
+
+test('25 | Mi perfil: el último administrador no puede degradarse solo', async () => {
+  await limpiarUsuarios();
+  await usuarioEnMongo({
+    username: 'admin_solitario',
+    password: 'clave-solo',
+    role: 'administrador_mecanico',
+    nombre: 'Solitario',
+  });
+
+  const cookie = (
+    await api('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin_solitario', password: 'clave-solo' },
+    })
+  ).cookie;
+
+  const degradado = await api('/api/auth/me', {
+    method: 'PUT',
+    cookie,
+    body: { role: 'estudiante_mecanica' },
+  });
+  assert.equal(degradado.status, 400, 'no se puede degradar al último administrador');
+  assert.match(degradado.body.error, /al menos un administrador/i);
+
+  const sigue = await api('/api/auth/me', { cookie });
+  assert.equal(sigue.body.role, 'administrador_mecanico');
+});
+
+// Este es el test que cierra FASE 7: hasta aqui las fallas del administrador
+// llegaban al catalogo (test 18) pero NO intervenian en la inferencia. Se
+// comprueba la ruta completa con el sintoma mas discriminating posible: la falla
+// se crea por la API de Mongo, entra al motor, y un diagnostico real la
+// devuelve con sus causas; luego se borra y deja de ofrecerse.
+test('22 | FASE 7: la falla del administrador entra en la inferencia con sus causas y al borrarla sale', async () => {
+  await usuarioEnMongo({
+    username: 'admin_f7',
+    password: 'clave-f7',
+    role: 'administrador_mecanico',
+    nombre: 'Admin F7',
+  });
+  const { cookie } = await api('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin_f7', password: 'clave-f7' },
+  });
+
+  // Sintoma inventado a proposito: si no existiera en el catalogo estatico, su
+  // aparicion en el diagnostico solo puede venir de la falla creada aqui. Son
+  // DOS a proposito: la falla se afirma como conjuncion, y con un solo sintoma
+  // de los dos no debe inferirse.
+  const sintomas = ['ruido_met_al_ralentizar', 'vibracion_volante_arranque'];
+  const causas = ['Banda de distribucion estirada', 'Escobillas del alternador tocando el soporte'];
+
+  const creada = await api('/api/fallas', {
+    method: 'POST',
+    cookie,
+    body: {
+      ...FALLA_VALIDA,
+      nombre: 'Ruido FASE 7',
+      sintomas,
+      causas,
+      // Rango de dos anos: permite comprobar tanto que el año dentro infiere
+      // como que uno fuera no.
+      vehiculo: { marca: 'mazda', modelo: 'cx5', anio: 2018, anioDesde: 2017, anioHasta: 2019, transmision: 'automatica' },
+    },
+  });
+  assert.equal(creada.status, 201, 'la falla debe crearse');
+  // El identificador lo deriva el backend del nombre; no se adivina aqui porque
+  // el diagnostico devuelve ese mismo id y una suposicion equivocada haria que el
+  // test pasara sin comprobar nada (o fallara sin decir por que).
+  const prologId = creada.body.prologId;
+  assert.ok(prologId, 'la API debe devolver el prologId generado');
+
+  // Sincronizacion asincrona a proposito: se sondea el diagnostico hasta que la
+  // falla este afirmada en el motor. Preguntar por el resultado (y no por
+  // /api/fallas) es a proposito tambien:asi se prueba que la falla infiere, no
+  // solo que se catalogue.
+  const diagnostica = async (vehiculo, sintomas) => {
+    const resp = await prologDiagnostico({ ...vehiculo, sintomas });
+    assert.equal(resp.status, 'success');
+    return resp.fallas;
+  };
+  const infiere = async (vehiculo, sintomas) => {
+    for (let i = 0; i < 20; i++) {
+      const fallas = await diagnostica(vehiculo, sintomas);
+      const hallada = fallas.find((f) => f.id === prologId);
+      if (hallada) return hallada;
+      await sleep(250);
+    }
+    return null;
+  };
+
+  const dentro = { marca: 'mazda', modelo: 'cx5', anio: 2018, transmision: 'desconocida' };
+  const hallada = await infiere(dentro, sintomas);
+  assert.ok(hallada, 'la falla del administrador debe aparecer en el diagnostico con sus dos sintomas');
+
+  // Las causas llegan al resultado del diagnostico: sin esto el usuario de a pie
+  // no ve para que sirve la falla que otro tecnico escribio.
+  assert.deepEqual(hallada.causas, causas, 'las causas deben viajar al resultado del diagnostico');
+
+  // Con solo UN sintoma de los dos no puede aparecer: la falla se afirma como
+  // conjuncion, y una conjuncion con una premisa falsa no se cumple.
+  const aMedias = await diagnostica(dentro, [sintomas[0]]);
+  assert.ok(
+    !aMedias.some((f) => f.id === prologId),
+    'con un solo sintoma la falla no debe inferirse'
+  );
+
+  // El año FUERA del rango tampoco: acota por vehiculo, no solo por marca/modelo.
+  const fueraDeRango = await diagnostica(
+    { marca: 'mazda', modelo: 'cx5', anio: 2024, transmision: 'desconocida' },
+    sintomas
+  );
+  assert.ok(
+    !fueraDeRango.some((f) => f.id === prologId),
+    'fuera del rango de años la falla no debe inferirse'
+  );
+
+  // Marca distinta tampoco. El año desconocido (0) si debe inferir: es lo
+  // permisivo que se acordo, para no perder fallas por no saber el año.
+  const otroModelo = await diagnostica(
+    { marca: 'mazda', modelo: 'cx3', anio: 2018, transmision: 'desconocida' },
+    sintomas
+  );
+  assert.ok(!otroModelo.some((f) => f.id === prologId), 'con otro modelo la falla no debe inferirse');
+
+  const sinAnio = await diagnostica({ marca: 'mazda', modelo: 'cx5', anio: 0, transmision: 'desconocida' }, sintomas);
+  assert.ok(
+    sinAnio.some((f) => f.id === prologId),
+    'con año desconocido la falla debe inferirse igualmente'
+  );
+
+  // Al borrar, la falla y su sintoma desaparecen del motor. Si el sintoma se
+  // quedara, contaminaria los diagnosticos siguientes aunque la falla ya no
+  // exista; si el sintoma esttico `sobrecalentamiento` desapareciera al
+  // limpiar las dinamicas, la base estatica estaria rota.
+  const borrada = await api(`/api/fallas/${creada.body._id}`, { method: 'DELETE', cookie });
+  assert.equal(borrada.status, 200);
+
+  let sigue = null;
+  for (let i = 0; i < 20 && sigue !== false; i++) {
+    const fallas = await diagnostica(dentro, [...sintomas, 'sobrecalentamiento']);
+    sigue = fallas.some((f) => f.id === prologId) ? true : false;
+    if (sigue === true) await sleep(250);
+  }
+  assert.equal(sigue, false, 'la falla borrada debe dejar de inferirse');
+
+  const catalogo = await (await fetch(`http://localhost:${PUERTO_PROLOG}/api/sintomas`)).json();
+  const ids = (catalogo.sintomas || catalogo).map((s) => s.id || s.nombre);
+  assert.ok(!ids.includes(sintomas[0]), 'el sintoma de la falla borrada no debe quedar en el catalogo');
+  assert.ok(ids.includes('sobrecalentamiento'), 'limpiar las dinamicas no debe tocar la base estatica');
 });

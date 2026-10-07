@@ -37,6 +37,27 @@
 :- dynamic modo_http/0.
 :- dynamic historial_diagnostico/1.
 
+% --- CONOCIMIENTO DINÁMICO (Fallas registradas por usuario) ---
+:- dynamic falla/2.
+:- dynamic nombre_falla/2.
+:- dynamic meta_falla/3.
+:- dynamic reparacion/2.
+:- dynamic nombre_reparacion/2.
+:- dynamic fuente_falla/2.
+:- dynamic confianza_dato/2.
+:- dynamic aplica_a/5.
+:- dynamic explicacion/1.
+:- dynamic sintoma/1.
+:- dynamic nombre_sintoma/2.
+:- dynamic categoria_sintoma/2.
+% Marcador para fallas dinámicas de usuario (separación sistema/usuario)
+:- dynamic falla_usuario/1.
+:- dynamic sintoma_usuario/1.
+% Causas de una falla dinámica: las declara Mongo pero el motor las necesita para
+% devolverlas en el diagnóstico. La base estática no las modela, así que se
+% degradan a lista vacía al construir el diccionario.
+:- dynamic causa_falla/2.
+
 :- use_module(library(lists)).
 
 
@@ -185,6 +206,21 @@ transmision_compatible(T, T).
 
 aplica_vehiculo(Falla, Marca, Modelo, Anio, Transmision) :-
     aplica_a(Falla, Marca, Modelo, Anio, Requerida),
+    transmision_compatible(Requerida, Transmision).
+
+% Año desconocido: `normalizar_anio/2` deja 0 cuando el dato no llega, y 0 no
+% es un año real, así que sirve de centinela. Sin esta cláusula las fallas con
+% rango de año desaparecerían del diagnóstico de quien no conoce su año, que es
+% justo lo contrario de la política permisiva de la línea anterior.
+%
+% Se usa `clause/2` y no una llamada directa porque `clause/2` entrega la
+% cabecera SIN ejecutar el cuerpo: así se leen marca, modelo y transmisión de la
+% cabeza y se saltan los guards `Anio >= Min, Anio =< Max`. Marca y modelo
+% siguen teniendo que coincidir; solo el año se perdona.
+aplica_vehiculo(Falla, Marca, Modelo, Anio, Transmision) :-
+    Anio == 0,
+    !,
+    clause(aplica_a(Falla, Marca, Modelo, _, Requerida), _),
     transmision_compatible(Requerida, Transmision).
 
 % --- Normalizacion de datos de entrada (consola y HTTP) ---
@@ -1212,13 +1248,21 @@ inicio :-
 :- use_module(library(http/http_dispatch)).
 :- use_module(library(http/http_json)).
 :- use_module(library(http/http_cors)).
+% `library(http/http_parameters)` aporta `http_parameters/2`, que lee los
+% parametros de la query y del cuerpo de un PUT/DELETE. No basta con
+% `thread_httpd`: los handlers se ejecutan en el modulo `user` y, sin este
+% import, SWI responde "Unknown procedure" con 500 en vez de un 400 de
+% peticion invalida. `post_type(string)` hace que un `prologId=` ausente o mal
+% formado falle aqui y no mas abajo.
+:- use_module(library(http/http_parameters)).
 
 :- set_setting(http:cors, [*]). % Permite recibir peticiones de cualquier página web
 
 % Endpoints (método principal + preflight OPTIONS del navegador)
 :- http_handler(root(api/diagnostico), procesar_api, [methods([options, post]), time_limit(infinite)]).
 :- http_handler(root(api/sintomas), procesar_sintomas, [methods([options, get])]).
-:- http_handler(root(api/fallas), procesar_fallas, [methods([options, get])]).
+:- http_handler(root(api/fallas), procesar_fallas_dinamicas, [methods([options, get, post, put, delete]), time_limit(infinite)]).
+:- http_handler(root(api/fallas/bootstrap), procesar_bootstrap_fallas, [methods([options, post]), time_limit(infinite)]).
 :- http_handler(root(api/historial), procesar_historial, [methods([options, get])]).   % NUEVO (aditivo)
 
 cors_reply(Metodos) :-
@@ -1355,6 +1399,9 @@ falla_a_dict(Disparos, Certeza-Falla, Dict) :-
     (   fuente_falla(Falla, Fuente) -> true
     ;   Fuente = 'Base original del sistema (sin fuente registrada)' ),
     (   confianza_dato(Falla, CD) -> true ; CD = no_registrada ),
+    % Las causas las declaran las fallas de usuario; la base estatica no las
+    % modela, asi que degradan a lista vacia en vez de romper el diagnostico.
+    (   causa_falla(Falla, Causas) -> true ; Causas = [] ),
     Dict = _{
         id: Falla,
         nombre: Nombre,
@@ -1365,6 +1412,7 @@ falla_a_dict(Disparos, Certeza-Falla, Dict) :-
         moneda: Moneda,
         reparaciones: RepNombres,
         sintomas_relacionados: Respaldo,
+        causas: Causas,
         fuente: Fuente,
         confianza_dato: CD
     }.
@@ -1409,6 +1457,384 @@ procesar_fallas(_Request) :-
         fallas: FallasDict
     }).
 
+% ==========================================
+% CRUD FALLAS DINÁMICAS + BOOTSTRAP
+% ==========================================
+
+procesar_fallas_dinamicas(Request) :-
+    option(method(options), Request),
+    !,
+    cors_reply([get, post, put, delete]).
+
+procesar_fallas_dinamicas(Request) :-
+    option(method(get), Request),
+    !,
+    cors_enable,
+    procesar_fallas(Request).
+
+procesar_fallas_dinamicas(Request) :-
+    option(method(post), Request),
+    !,
+    cors_enable,
+    http_read_json_dict(Request, DictIn),
+    procesar_falla_crear(DictIn, Resp),
+    reply_json_dict(Resp).
+
+procesar_fallas_dinamicas(Request) :-
+    option(method(put), Request),
+    !,
+    cors_enable,
+    prolog_id_de_query(Request, QId),
+    (   QId == sin_prolog_id
+    ->  reply_json_dict(_{error:'prologId requerido'}, [status(400)])
+    ;   http_read_json_dict(Request, DictIn),
+        % El identificador viene en la URL y no en el cuerpo: si no se copiara
+        % al dict, el cuerpo podría traer otro prologId y la falla se escribiría
+        % bajo un functor distinto del que se pidió editar.
+        put_dict(prologId, DictIn, QId, DictConId),
+        procesar_falla_crear(DictConId, Resp),
+        reply_json_dict(Resp)
+    ).
+
+procesar_fallas_dinamicas(Request) :-
+    option(method(delete), Request),
+    !,
+    cors_enable,
+    prolog_id_de_query(Request, QId),
+    (   QId == sin_prolog_id
+    ->  reply_json_dict(_{error:'prologId requerido'}, [status(400)])
+    ;   (   falla_usuario(QId)
+        ->  retractar_falla_dinamica(QId),
+            reply_json_dict(_{status:'success', action:'retracted'})
+        ;   reply_json_dict(_{status:'not_found'}, [status(404)])
+        )
+    ).
+
+% Lee el `prologId` de la query string. DELETE y PUT llamaban a
+% `http_current_query/2`, que no existe en SWI-Prolog, asi que el motor
+% respondia 500 `Unknown procedure`, el backend solo lo dejaba anotado en el log
+% y la borrada nunca llegaba a retractarse: la falla seguia viva en el motor.
+%
+% `http_parameters/2` si existe, pero no devuelve un dict: recibe la LISTA de
+% parametros que se quieren extraer, en la forma `Nombre(Valor, Opciones)`, y
+% lanza excepcion si el parametro no viene. Por eso va dentro de un `catch` que
+% degrada a `sin_prolog_id`, que los handlers traducen a un 400 explicito.
+% La query tiene prioridad sobre el cuerpo (`http_parms/4` busca `search` antes
+% que el POST), asi que un PUT con cuerpo JSON tambien funciona.
+prolog_id_de_query(Request, PrologId) :-
+    (   catch(http_parameters(Request, [prologId(Id, [post_type(string)])]), _, fail),
+        Id \== ''
+    ->  PrologId = Id
+    ;   PrologId = sin_prolog_id
+    ).
+
+procesar_bootstrap_fallas(Request) :-
+    option(method(options), Request),
+    !,
+    cors_reply([post]).
+
+procesar_bootstrap_fallas(Request) :-
+    cors_enable,
+    http_read_json_dict(Request, DictIn),
+    (   get_dict(fallas, DictIn, FallasList), is_list(FallasList)
+    ->  limpiar_dinamicas_usuario,
+        procesar_lote_fallas(FallasList, 0, N),
+        reply_json_dict(_{status:'success', count:N})
+    ;   reply_json_dict(_{error:'fallas[] requerido'}, [status(400)])
+    ).
+
+procesar_lote_fallas([], N, N).
+procesar_lote_fallas([F|T], Acc, N) :-
+    ignore(procesar_falla_crear(F, _)),
+    Acc1 is Acc + 1,
+    procesar_lote_fallas(T, Acc1, N).
+
+% Una falla sin sintomas no se guarda. La falla se afirma como REGLA cuyo cuerpo
+% es la conjuncion de sus sintomas, y `falla(P, C) :- true` se dispararia en
+% todos los diagnosticos, es decir, apareceria aunque no hubiera un solo sintoma
+% en comun. El endpoint Prolog es un limite de confianza: el backend tambien lo
+% valida, peroreachable directo no se puede quedar solo con esa capa.
+procesar_falla_crear(DictIn, Resp) :-
+    (   falla_incompleta(DictIn, Motivo)
+    ->  reply_json_dict(_{status:'error', error:Motivo}, [status(400)])
+    ;   crear_falla_dinamica(DictIn, Resp)
+    ).
+
+falla_incompleta(DictIn, 'La falla debe declarar al menos un sintoma') :-
+    \+ ( get_dict(sintomas, DictIn, Ss), is_list(Ss), Ss \== [] ),
+    !.
+falla_incompleta(DictIn, 'La falla debe indicar marca, modelo y transmision del vehiculo') :-
+    \+ vehiculo_completo(DictIn),
+    !.
+
+vehiculo_completo(DictIn) :-
+    is_dict(DictIn),
+    get_dict(vehiculo, DictIn, Veh),
+    is_dict(Veh),
+    get_dict(marca, Veh, M),    M \== '',    \+ M == null,
+    get_dict(modelo, Veh, Mo),  Mo \== '',   \+ Mo == null,
+    get_dict(transmision, Veh, T), T \== '', \+ T == null.
+
+% El ano se guarda como RANGO y no como valor unico porque es como lo declara la
+% base estatica: las fallas por vehiculo usan guards `Anio >= Min, Anio =< Max`.
+% El administrador que no conoce el rango escribe el mismo ano en ambos extremos
+% y queda con la semantica exacta que quiere.
+vehiculo_aplicable(DictIn, Marca, Modelo, Trans, AnioDesde, AnioHasta) :-
+    get_dict(vehiculo, DictIn, Veh),
+    get_dict(marca, Veh, M),       normalizar_identificador(M, Marca),
+    get_dict(modelo, Veh, Mo),     normalizar_identificador(Mo, Modelo),
+    get_dict(transmision, Veh, T), normalizar_transmision(T, Trans),
+    (   anio_entero(Veh, anioDesde, Desde) -> true ; Desde = 0 ),
+    (   anio_entero(Veh, anioHasta,  Hasta) -> true ; Hasta = 0 ),
+    rango_anios(Desde, Hasta, AnioDesde, AnioHasta).
+
+anio_entero(Veh, Clave, Valor) :-
+    get_dict(Clave, Veh, Valor),
+    (   integer(Valor)
+    ->  true
+    ;   (   atom_string(A, Valor), atom_number(A, N), integer(N)
+        ->  Valor = N
+        ;   fail
+        )
+    ).
+
+% Sin rango declarado la falla aplica a cualquier ano. Con rango, se toleran los
+% extremos invertidos porque el formulario puede mandarlos en cualquier orden.
+rango_anios(0, 0, 0, 9999) :- !.
+rango_anios(Desde, Hasta, Min, Max) :-
+    (   Desde =< Hasta
+    ->  Min = Desde, Max = Hasta
+    ;   Min = Hasta, Max = Desde
+    ).
+
+% Construye el cuerpo de la regla `falla/2` como la conjuncion de sus sintomas,
+% con la misma forma anidada `(sintoma(A), sintoma(B), ...)` que usan las fallas
+% estaticas, para que `extraer_conjuncion/2` las lea igual.
+cuerpo_sintomas([], true).
+cuerpo_sintomas([S|Ss], (sintoma(S), Resto)) :-
+    cuerpo_sintomas(Ss, Resto).
+
+crear_falla_dinamica(DictIn, Resp) :-
+    (   get_dict(nombre, DictIn, NombreStr)
+    ->  true
+    ;   NombreStr = ''
+    ),
+    (   get_dict(prologId, DictIn, PrologId0)
+    ->  atom_string(PrologId, PrologId0)
+    ;   slug_prolog_id(NombreStr, PrologId)
+    ),
+    (   get_dict(sintomas, DictIn, SintomasIn), is_list(SintomasIn)
+    ->  maplist(normalizar_id_sintoma, SintomasIn, SintomasList)
+    ;   SintomasList = []
+    ),
+    (   get_dict(procedimiento, DictIn, ProcIn), is_list(ProcIn)
+    ->  ProcList = ProcIn
+    ;   ProcList = []
+    ),
+    (   get_dict(causas, DictIn, CausasIn), is_list(CausasIn)
+    ->  CausasList = CausasIn
+    ;   CausasList = []
+    ),
+    % El vehiculo se normaliza con las MISMAS funciones que usa el diagnostico
+    % (`procesar_api/1`): `aplica_vehiculo/5` compara por unificacion y en el
+    % hilo HTTP un string no unifica con un atomo.
+    vehiculo_aplicable(DictIn, VehMarca, VehModelo, VehTrans, AnioDesde, AnioHasta),
+    (   get_dict(precioMin, DictIn, PM)
+    ->  PrecioMin = PM
+    ;   PrecioMin = 0
+    ),
+    (   get_dict(precioMax, DictIn, PMx)
+    ->  PrecioMax = PMx
+    ;   PrecioMax = 0
+    ),
+    % La moneda llega en el cuerpo y se respeta en vez de fijarla a mano: si aqui
+    % se escribiera siempre `mxn`, una falla dinamica mostraria una moneda distinta
+    % de las de la base estatica, que si la declaran.
+    (   get_dict(moneda, DictIn, Mon)
+    ->  MonedaAtom = Mon
+    ;   MonedaAtom = mxn
+    ),
+    % `vehiculo` y `causas` si se modelan: el primero es lo que permite que la
+    % falla se limite a un vehiculo en vez de aparecer en todo diagnostico, y las
+    % causas se devuelven con el resultado. `solucion` sigue sin modelarse: es
+    % texto largo de taller, no participa del razonamiento y se consulta en Mongo.
+    (   get_dict(urgencia, DictIn, Urg)
+    ->  UrgAtom = Urg
+    ;   UrgAtom = media
+    ),
+    (   get_dict(confianzaDato, DictIn, CD)
+    ->  CDAtom = CD
+    ;   CDAtom = media
+    ),
+    (   get_dict(fuenteFalla, DictIn, FF)
+    ->  FFText = FF
+    ;   FFText = 'Registrado por usuario (Administrador/Mecánico)'
+    ),
+    (   get_dict(certezaBase, DictIn, CB), number(CB)
+    ->  CertezaBase = CB
+    ;   CertezaBase = 0.7
+    ),
+    (   falla_usuario(PrologId)
+    ->  retractar_falla_dinamica(PrologId)
+    ;   true
+    ),
+    asegurar_sintomas_usuario(SintomasList),
+    cuerpo_sintomas(SintomasList, SintomasCuerpo),
+    assertz((falla(PrologId, CertezaBase) :- SintomasCuerpo)),
+    (   string(NombreStr) -> atom_string(NomAtomF, NombreStr); NomAtomF = NombreStr ),
+    assertz(nombre_falla(PrologId, NomAtomF)),
+    assertz(meta_falla(PrologId, urgencia(UrgAtom), costo(PrecioMin, PrecioMax, MonedaAtom))),
+    maplist(atom_string, PasosAtoms, ProcList),
+    assertz(reparacion(PrologId, PasosAtoms)),
+    maplist(assert_nombre_paso, PasosAtoms, ProcList),
+    assertz((aplica_a(PrologId, VehMarca, VehModelo, Anio, VehTrans)
+             :- Anio >= AnioDesde, Anio =< AnioHasta)),
+    (   CausasList \== []
+    ->  assertz(causa_falla(PrologId, CausasList))
+    ;   true
+    ),
+    assertz(fuente_falla(PrologId, FFText)),
+    assertz(confianza_dato(PrologId, CDAtom)),
+    assertz(explicacion(PrologId)),
+    assertz(falla_usuario(PrologId)),
+    Resp = _{status:'success', prologId:PrologId}.
+
+% Normaliza un nombre al `prologId` que usa el resto del sistema. Replica
+% `slugPrologId` del backend, que es la unica fuente de verdad del identificador:
+%
+%   minusculas -> NFD sin marcas -> separador `_+` por cualquier corrida que no
+%   sea [a-z0-9] -> se quitan los `_` de los extremos.
+%
+% El backend reemplaza ESPACIOS por `_`, no los borra: "Fuga de refrigerante" es
+% `fuga_de_refrigerante`. Por eso el guion bajo es un caracter de salida y no uno
+% descartable; cuando se filtraba, el motor guardaba la falla como
+% `fugaderefrigerante`, un id que el catalogo, el diagnostico y el borrado nunca
+% reconocen. Tampoco se admiten acentuados: el backend aplica NFD y los retira.
+slug_prolog_id(NombreStr, PrologId) :-
+    string_lower(NombreStr, L),
+    string_codes(L, Codes),
+    partes_palabras(Codes, Partes),
+    une_partes(Partes, SlugStr),
+    (   SlugStr == ''
+    ->  PrologId = f_dinamica
+    ;   atom_string(PrologId, SlugStr)
+    ).
+
+% Parte el texto en las palabras que el backend separaria con `_`. El backend
+% hace `replace(/[^a-z0-9]+/g, '_')`: una CORRIDA de caracteres no admitidos se
+% convierte en un unico `_`. Como los espacios caen dentro de esa corrida, "Fuga
+% de refrigerante" produce tres partes y no una. Antes cada caracter no admitido
+% se descartaba y el id quedaba pegado (`fugaderefrigerante`), que es un functor
+% que ni el catalogo ni el diagnostico ni el borrado reconocen. Al partir en
+% palabras y descartar las vacias queda hecho de paso el recorte de `_` de los
+% extremos, que el backend hace con `replace(/^_+|_+$/g, '')`.
+partes_palabras([], []).
+partes_palabras([C|Cs], Partes) :-
+    (   caracter_slug(C)
+    ->  toma_palabra([C|Cs], Palabra, Resto),
+        partes_palabras(Resto, Restos),
+        Partes = [Palabra|Restos]
+    ;   toma_separador([C|Cs], Resto),
+        partes_palabras(Resto, Partes)
+    ).
+
+toma_palabra([], [], []).
+toma_palabra([C|Cs], Palabra, Resto) :-
+    caracter_slug(C),
+    !,
+    toma_palabra(Cs, Cola, Resto),
+    Palabra = [C|Cola].
+toma_palabra(Codes, [], Codes).
+
+% Consume una CORRIDA de separadores y se detiene en el primer caracter admitido,
+% dejando ese caracter en `Resto`. El corte tras el primer separador es lo que
+% evita que se coma el resto de la cadena: sin el, `toma_separador` seguia
+% hasta el final y solo sobrevivia la primera palabra del id.
+toma_separador([], []).
+toma_separador([C|Cs], Resto) :-
+    \+ caracter_slug(C),
+    !,
+    toma_separador_resto(Cs, Resto).
+
+toma_separador_resto([], []).
+toma_separador_resto([C|Cs], Resto) :-
+    \+ caracter_slug(C),
+    !,
+    toma_separador_resto(Cs, Resto).
+toma_separador_resto(Cs, Cs).
+
+% Une las partes con `_`. Las partes son listas de codigos, no atomos, asi que
+% `atomic_list_concat/3` no sirve: hay que pasarlas a texto primero.
+une_partes([], '').
+une_partes([P|Ps], Slug) :-
+    string_codes(S, P),
+    une_partes(Ps, Cola),
+    (   Cola == ''
+    ->  Slug = S
+    ;   string_concat(S, '_', T),
+        string_concat(T, Cola, Slug)
+    ).
+
+% Caracteres que pasan al identificador: letras ASCII minusculas y digitos. Los
+% acentuados no se admiten porque el backend aplica NFD y los retira antes de
+% aplicar su regex.
+caracter_slug(C) :-
+    (   (C >= 97, C =< 122) ; (C >= 48, C =< 57)
+    ->  true
+    ;   fail
+    ).
+
+% Los sintomas de una falla llegan como texto libre ("Aire acondicionado no
+% enfria") y el motor los indexa por id, asi que se normalizan con la misma regla
+% que el nombre de la falla. Sin esto el sintoma quedaria escrito con su tilde o su
+% mayuscula y el catalogo no lo reconoceria.
+% Devuelve un ATOM, no un string. `procesar_api/1` afirma los sintomas del
+% diagnostico con `atom_string/2` y `preguntar/2` los compara por unificacion
+% contra `conocido/3`; si esta devolviera un string, `sintoma("x")` buscaria
+% `conocido(s, sintoma, "x")` mientras el diagnostico habia afirmado
+% `conocido(s, sintoma, x)`, y la falla nunca dispararia. Es la misma razon por
+% la que `slug_prolog_id/2` cierra con `atom_string/2`.
+normalizar_id_sintoma(S, SOut) :-
+    (   atom(S)    -> atom_string(S, Ss)
+    ;   string(S)  -> Ss = S
+    ;               term_string(Ss, S)
+    ),
+    string_lower(Ss, L),
+    string_codes(L, Codes),
+    partes_palabras(Codes, Partes),
+    une_partes(Partes, SOutStr),
+    (   SOutStr == ''
+    ->  SOut = sintoma
+    ;   atom_string(SOut, SOutStr)
+    ).
+
+asegurar_sintomas_usuario([]).
+asegurar_sintomas_usuario([S|T]) :-
+    % El guardia pregunta si YA existe una clausula `sintoma/1` para S, no si
+    % `sintoma(S)` tiene exito ahora. Con `\+ sintoma(S)` el resultado dependia
+    % del estado de `conocido/3` de la peticion en curso, lo que rompia el
+    % guardado del anti-duplicado. Preguntar por la clausula es estable.
+    %
+    % Esto tambien protege la base estatica: como solo se marca con
+    % `sintoma_usuario/1` lo que se agrega aqui, y solo se agrega lo que no
+    % existia, el `retractall(sintoma(S))` del borrado nunca alcanza a tocar un
+    % sintoma declarado en el archivo.
+    (   \+ clause(sintoma(S), _)
+    ->  assertz((sintoma(S) :- preguntar(sintoma, S))),
+        (   atom_string(S, Sstr) -> true; Sstr=S ),
+        assertz(nombre_sintoma(S, Sstr)),
+        assertz(categoria_sintoma(S, 'General')),
+        assertz(sintoma_usuario(S))
+    ;   true
+    ),
+    asegurar_sintomas_usuario(T).
+
+assert_nombre_paso(PasoAtom, PasoTexto) :-
+    (   string(PasoTexto) -> atom_string(PtAtom, PasoTexto); PtAtom=PasoTexto ),
+    (   \+ nombre_reparacion(PasoAtom, _)
+    ->  assertz(nombre_reparacion(PasoAtom, PtAtom))
+    ;   true
+    ).
 falla_meta_a_dict(F, Dict) :-
     (nombre_falla(F, N) -> true ; atom_string(N, F)),
     (   meta_falla(F, urgencia(Urg), costo(Min, Max, Moneda)) -> true
@@ -1444,3 +1870,53 @@ procesar_historial(_Request) :-
         total: Total,
         historial: Ds
     }).
+
+% ==========================================
+% GESTIÓN DE CONOCIMIENTO DINÁMICO (USUARIO)
+% ==========================================
+
+% Limpia TODO el conocimiento dinámico ingresado por usuario
+limpiar_dinamicas_usuario :-
+    findall(F, falla_usuario(F), Fs),
+    maplist(retractar_falla_dinamica, Fs),
+    findall(S, sintoma_usuario(S), Ss),
+    maplist(retractar_sintoma_dinamico, Ss),
+    retractall(falla_usuario(_)),
+    retractall(sintoma_usuario(_)).
+
+% Retrae todas las cláusulas asociadas a una falla dinámica. Antes de retirar su
+% regla se anotan sus síntomas, porque una vez retirada ya no queda forma de
+% saber cuáles eran; luego solo se retiran los síntomas de usuario que ninguna
+% otra falla viva siga usando. Un síntoma compartido con otra falla se queda.
+retractar_falla_dinamica(F) :-
+    findall(S, ( clause(falla(F, _), Body), simbolos_de_cuerpo(Body, Ss), member(S, Ss) ), Singles),
+    sort(Singles, SintomasDeLaFalla),
+    retractall(falla(F,_)),
+    retractall(nombre_falla(F,_)),
+    retractall(meta_falla(F,_,_)),
+    retractall(reparacion(F,_)),
+    retractall(explicacion(F)),
+    retractall(fuente_falla(F,_)),
+    retractall(confianza_dato(F,_)),
+    retractall(causa_falla(F,_)),
+    retractall(aplica_a(F,_,_,_,_)),
+    retractall(falla_usuario(F)),
+    maplist(retractar_sintoma_huerfano, SintomasDeLaFalla).
+
+% Un síntoma de usuario que ninguna falla viva (estática o dinámica) referencia
+% queda huérfano y se retira. El marcador `sintoma_usuario/1` evita tocar la base
+% estática, y mirar el cuerpo de las reglas (no `sintoma/1`) evita retirar un
+% síntoma que otra falla todavía usa para inferir.
+retractar_sintoma_huerfano(S) :-
+    (   sintoma_usuario(S),
+        \+ ( clause(falla(_, _), Body), simbolos_de_cuerpo(Body, Ss), memberchk(S, Ss) )
+    ->  retractar_sintoma_dinamico(S)
+    ;   true
+    ).
+
+% Retrae síntomas dinámicos (solo marcados como usuario)
+retractar_sintoma_dinamico(S) :-
+    retractall(sintoma(S)),
+    retractall(nombre_sintoma(S,_)),
+    retractall(categoria_sintoma(S,_)),
+    retractall(sintoma_usuario(S)).

@@ -1,6 +1,9 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const session = require('express-session');
+const MongoStore = require('connect-mongo');
+const bcrypt = require('bcryptjs');
 
 const app = express();
 const PUERTO = process.env.PORT || 5000;
@@ -56,9 +59,216 @@ app.use(
 );
 app.use(express.json({ limit: '1mb' }));
 
+function sanitizeUri(uri) {
+  try {
+    if (!uri) return uri;
+    return uri.replace(/:\/\/([^:]+):([^@]+)@/, '://****:****@');
+  } catch (e) {
+    return uri;
+  }
+}
+
+// Sesiones
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'dev-session-secret-cambiar-en-prod',
+  resave: false,
+  saveUninitialized: false,
+  store: MongoStore.create({ mongoUrl: MONGO_URI, collectionName: 'sesiones' }),
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 1000 * 60 * 60 * 8,
+  },
+}));
+
+// Modelos
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true, trim: true, lowercase: true },
+  passwordHash: { type: String, required: true },
+  role: { type: String, enum: ['administrador_mecanico', 'estudiante_mecanica'], required: true },
+  nombre: String,
+  activo: { type: Boolean, default: true },
+}, { timestamps: true });
+
+const fallaSchema = new mongoose.Schema({
+  nombre: { type: String, required: true, trim: true },
+  sintomas: [String],
+  // El año se guarda como rango porque así lo declara la base de conocimiento de
+  // Prolog: sus fallas por vehículo usan `Anio >= Min, Anio =< Max`, nunca un año
+  // exacto. `anio` se conserva para las filas ya guardadas y para el formulario
+  // de diagnóstico; cuando no llega rango, `normalizarVehiculo` usa `anio` como
+  // ambos extremos, que es la semántica exacta que se pidió para "no sé el rango".
+  vehiculo: {
+    marca: String,
+    modelo: String,
+    anio: Number,
+    anioDesde: Number,
+    anioHasta: Number,
+    transmision: String,
+  },
+  causas: [String],
+  solucion: String,
+  procedimiento: [String],
+  precioMin: { type: Number, required: true, min: 0 },
+  precioMax: { type: Number, required: true, min: 0 },
+  moneda: { type: String, enum: ['MXN'], default: 'MXN' },
+  creadoPor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  prologId: { type: String, required: true },
+  activo: { type: Boolean, default: true, index: true },
+  deletedAt: { type: Date, default: null, index: true },
+  origen: { type: String, enum: ['usuario'], default: 'usuario' },
+  confianzaDato: { type: String, default: 'media' },
+  fuenteFalla: { type: String, default: 'Registrado por usuario (Administrador/Mecánico)' },
+  urgencia: { type: String, default: 'media' },
+  certezaBase: { type: Number, default: 0.7, min: 0, max: 1 },
+}, { timestamps: true });
+
+// Indice unico PARCIAL: solo las fallas vivas reservan su prologId. Con un indice
+// unico global, una falla borrada logicamente seguia ocupandi el identificador
+// para siempre, y volver a registrar la misma falla (flujo normal: se creo,
+// se elimino por error, se vuelve a capturar) terminaba en un 500 de indice
+// duplicado en vez de recrearse.
+fallaSchema.index(
+  { prologId: 1 },
+  { unique: true, partialFilterExpression: { deletedAt: null } }
+);
+fallaSchema.index({ activo: 1, deletedAt: 1 });
+const User = mongoose.model('User', userSchema);
+const Falla = mongoose.model('Falla', fallaSchema);
+
+// El indice de prologId paso de unico global a unico parcial (solo las fallas
+// vivas reservan el identificador). En una base ya creada el indice viejo sigue
+// ahi: autoIndex no cambia las opciones de un indice que ya existe, solo avisa, y
+// el unico global seguiria rechazando la recreacion de una falla borrada, que es
+// justo lo que el parcial viene a permitir. Por eso se reemplaza al arrancar, y
+// solo si el indice encontrado tiene la forma exacta del anterior (unico, sin
+// filtro parcial): cualquier otro indice con ese nombre se deja como esta, porque
+// significaria que alguien lo cambio a proposito.
+//
+// Entre el drop y el create hay una ventana sin restriccion de unicidad. Con una
+// instalacion de un solo backend que escribe por peticion es inocua, y aun asi
+// el orden es fijo: primero se suelta el viejo, despues se crea el parcial, y si
+// la creacion falla el arranque lo dice en vez de dejarlo para siempre.
+async function alinearIndicePrologId() {
+  // En una base recien creada la coleccion `fallas` todavia no existe, y listar
+  // sus indices sobre un namespace inexistente lanza. Antes de este try el fallo
+  // era real: al ser el primer toque a la coleccion, una instalacion nueva
+  // moria en el arranque (`ns does not exist` -> process.exit) y nunca llegaba a
+  // crear el indice que vino a sustituir. Sin indice viejo que retirar no hay
+  // nada que alinear, asi que se sigue de largo.
+  let existentes;
+  try {
+    existentes = await Falla.collection.indexes();
+  } catch (err) {
+    // Solo se tolera la base recien creada: Mongo lanza NamespaceNotFound
+    // porque la coleccion todavia no existe, y ahi no hay indice que alinear.
+    // Cualquier otro error (permisos, red, primary caida) es real y se propaga:
+    // tragarselo devolveria el arranque con la unicidad de `prologId` sin
+    // comprobar, que es justo la invariante que este indice sostiene.
+    const namespaceAusente =
+      err.code === 26 ||
+      err.codeName === 'NamespaceNotFound' ||
+      err.codeName === 'IndexNotFound';
+    if (!namespaceAusente) throw err;
+    console.log(`[indices] Sin índices en fallas todavía: ${err.message}`);
+    return;
+  }
+  const viejo = existentes.find((i) => i.name === 'prologId_1');
+  if (!viejo) return;
+  if (viejo.partialFilterExpression) {
+    // El indice parcial es la unica garantia de que dos fallas activas no
+    // compartan `prologId`. Si el que ya existe filtra por otra cosa, protege
+    // algo distinto y sustituirlo cambiaria la invariante sin avisar, asi que
+    // se deja como esta y el arranque lo dice en voz alta.
+    const filtra = viejo.partialFilterExpression;
+    if (JSON.stringify(filtra) !== JSON.stringify({ deletedAt: null })) {
+      console.warn(
+        `[indices] prologId_1 ya es parcial pero con filtro inesperado ` +
+          `(${JSON.stringify(filtra)}). Se conserva; la unicidad entre fallas ` +
+          'activas queda sin garantizar.',
+      );
+    }
+    return;
+  }
+  await Falla.collection.dropIndex('prologId_1');
+  console.log('[indices] Retirado el índice único global prologId_1 (sustituto parcial)');
+  await Falla.createIndexes();
+  const [final] = (await Falla.collection.indexes()).filter((i) => i.name === 'prologId_1');
+  console.log(
+    final?.unique && final?.partialFilterExpression
+      ? '[indices] prologId_1 recreado como único parcial'
+      : '[indices] prologId_1 NO quedó como único parcial: revisa el motor'
+  );
+}
+
+// Vuelca las fallas registradas de MongoDB al motor. El endpoint de bootstrap de
+// Prolog limpia primero las dinamicas de usuario y afirma el lote completo, asi
+// que las fallas borradas en Mongo desaparecen tambien del motor sin que nadie
+// tenga que acordarse de retractar una por una.
+async function bootstrapFallasDinamicas() {
+  try {
+    const activas = await Falla.find({ activo: true, deletedAt: null }).lean();
+    // Se llama al endpoint tambien con el lote vacio, y el motivo es el
+    // retract: si aqui se salia con un `return` temprano, un arranque en el que
+    // ya no quedara ninguna falla viva dejaba en Prolog las dinamicas del
+    // arranque anterior, porque el motor solo se limpia cuando alguien le envia
+    // un bootstrap. El lote vacio es el unico modo de limpar.
+    const r = await fetch(`${PROLOG_BASE}/api/fallas/bootstrap`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fallas: activas.map(payloadProlog) }),
+      // El arranque espera de verdad a que Prolog responda (a diferencia de la
+      // sincronizacion por peticion), porque si no el primer diagnostico podria
+      // correr contra un motor sin las fallas de Mongo.
+      signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS * 2),
+    });
+    if (!r.ok) throw new Error(`Bootstrap Prolog HTTP ${r.status}`);
+    const j = await r.json();
+    console.log(
+      activas.length === 0
+        ? '[bootstrap] Motor sin fallas dinámicas de usuario'
+        : `[bootstrap] Fallas dinámicas cargadas en Prolog: ${j.count}`
+    );
+  } catch (e) {
+    console.error('[bootstrap] Error cargando fallas dinámicas:', e.message);
+  }
+}
+
+// Sin al menos un administrador nobody puede entrar: las rutas de escritura
+// exigen ese rol y /api/usuarios tambien. En una base nueva la coleccion esta
+// vacia, asi que se crea una cuenta inicial desde el entorno. Solo si la
+// coleccion esta vacia: en cuanto existe un usuario, esta funcion no vuelve a
+// tocar la base.
+async function seedAdminSiHaceFalta() {
+  try {
+    if ((await User.estimatedDocumentCount()) > 0) return;
+    const username = process.env.ADMIN_USERNAME;
+    const password = process.env.ADMIN_PASSWORD;
+    if (!username || !password) {
+      console.warn('[seed] No hay usuarios. Define ADMIN_USERNAME y ADMIN_PASSWORD para crear el primero.');
+      return;
+    }
+    await User.create({
+      username: username.toLowerCase(),
+      passwordHash: await bcrypt.hash(password, 10),
+      role: 'administrador_mecanico',
+      nombre: process.env.ADMIN_NOMBRE || 'Administrador',
+    });
+    console.log(`[seed] Administrador inicial creado: ${username}`);
+  } catch (e) {
+    console.error('[seed] Error creando el administrador inicial:', e.message);
+  }
+}
+
 mongoose
   .connect(MONGO_URI)
-  .then(() => console.log(`MongoDB conectado: ${MONGO_URI}`))
+  .then(async () => {
+    console.log(`MongoDB conectado: ${sanitizeUri(MONGO_URI)}`);
+    await seedAdminSiHaceFalta();
+    await alinearIndicePrologId();
+    await bootstrapFallasDinamicas();
+  })
   .catch((err) => {
     console.error('Error conectando a MongoDB:', err.message);
     process.exit(1);
@@ -360,6 +570,584 @@ app.get('/api/config/tipo-cambio', async (_req, res, next) => {
       fuente: tasa.fuente,
       es_estimado: tasa.es_estimado,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- Autorizacion ---
+// El identificador de usuario viaja en la sesion, no en la peticion: la cookie
+// HttpOnly es lo unico que el navegador manda solo, y un id leido de un header o
+// del cuerpo seria falsificable por el cliente. `requireAuth` y `requireAdmin`
+// son la unica frontera de confianza: el menu del frontend solo evita mostrar
+// botones, pero cualquier peticion a mano pasa por aqui.
+//
+// El rol no se toma de la sesion para autorizar. La sesion es una fotografia: si
+// un administrador degrada o desactiva a otro, la copia de su rol sigue en la
+// cookie del afectado y podria escribir en fallas hasta que cerrara sesion. Por
+// eso `requireAdmin` relee la cuenta antes de cada escritura; el coste es una
+// lectura indexada por _id, y lo que compra es que la revocacion sea inmediata.
+const ROLES = ['administrador_mecanico', 'estudiante_mecanica'];
+
+function requireAuth(req, res, next) {
+  if (!req.session?.userId) {
+    return res.status(401).json({ error: 'No autenticado' });
+  }
+  next();
+}
+
+async function requireAdmin(req, res, next) {
+  if (!req.session?.userId) {
+    return res.status(401).json({ error: 'No autenticado' });
+  }
+  try {
+    const cuenta = await User.findById(req.session.userId).lean();
+    if (!cuenta || !cuenta.activo) {
+      // Una cuenta borrada o desactivada deja de valer aunque la sesion siga
+      // viva. Se destruye la sesion para que el siguiente 401 del frontend cierre
+      // la pantalla y no deje un menu de administrador sobre una sesion muerta.
+      await new Promise((resolve) => req.session.destroy(resolve));
+      return res.status(401).json({ error: 'La sesión ya no es válida' });
+    }
+    if (cuenta.role !== 'administrador_mecanico') {
+      return res.status(403).json({ error: 'Se requiere rol administrador' });
+    }
+    req.admin = cuenta;
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+// El identificador que usa Prolog sale del nombre, y el motor no admite tildes ni
+// espacios en el functor: se normaliza a snake_case. La NFD separa la tilde de la
+// letra, asi que "ñ" queda como "n" + marca combinante y el filtro de marcas la
+// elimina; no hace falta un caso especial para la enye.
+function slugPrologId(nombre) {
+  return String(nombre)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+// --- Validacion de fallas ---
+// El mismo conjunto de reglas para crear y para editar: si divergen, el mismo
+// documento pasa por POST y es rechazado por PUT. Devuelve un mensaje, no una
+// lista: el cliente solo necesita saber que fallo, y el schema de mongoose ya
+// cubre el detalle de tipos en la capa de persistencia.
+const ANIO_MAXIMO = new Date().getFullYear();
+const TRANSMISIONES = ['desconocida', 'manual', 'automatica', 'cvt', 'dct'];
+const URGENCIAS = ['baja', 'media', 'alta', 'critica'];
+const CONFIANZAS = ['alta', 'media', 'baja', 'ninguna'];
+
+// Normaliza el vehículo a la forma que se persiste. Vive en una función porque la
+// construyen el POST, el PUT y la sincronización con Prolog, y el aviso de
+// `payloadProlog` vale igual aquí: tres copias del mismo objeto se separan en
+// cuanto una de las tres añade un campo y las otras dos no.
+//
+// El rango se deriva de `anioDesde`/`anioHasta` y, si no llegan, de `anio`. Con
+// `anio` en 0 el rango queda 0-0, que en Prolog significa "cualquier año" porque
+// `rango_anios/4` lo traduce a 0-9999, así que una falla sin año declarado no
+// queda dormida. Los extremos invertidos se toleran: el orden los pone el
+// formulario, no el modelo.
+function normalizarVehiculo(v) {
+  const src = v && typeof v === 'object' ? v : {};
+  const anio = Number(src.anio ?? 0);
+  const anioValido = (x) => {
+    const n = Number(x);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  };
+  const desde = anioValido(src.anioDesde) ?? anio;
+  const hasta = anioValido(src.anioHasta) ?? desde;
+  return {
+    marca: src.marca || '',
+    modelo: src.modelo || '',
+    anio,
+    anioDesde: Math.min(desde, hasta),
+    anioHasta: Math.max(desde, hasta),
+    transmision: src.transmision || 'desconocida',
+  };
+}
+
+function validarFalla(b) {
+  const nombre = typeof b.nombre === 'string' ? b.nombre.trim() : '';
+  if (!nombre) return 'El nombre de la falla es obligatorio.';
+  // Un nombre de solo simbolos o de otro alfabeto deja el identificador vacio, y
+  // Prolog no puede nombrar una falla sin functor.
+  if (!slugPrologId(nombre)) return 'El nombre debe incluir al menos una letra o un numero.';
+
+  if (!Array.isArray(b.sintomas)) return 'Los síntomas deben venir como lista.';
+  const sintomas = b.sintomas.map((s) => (typeof s === 'string' ? s.trim() : '')).filter(Boolean);
+  if (sintomas.length === 0) return 'La falla necesita al menos un síntoma.';
+
+  const precioMin = Number(b.precioMin);
+  const precioMax = Number(b.precioMax);
+  if (!Number.isFinite(precioMin) || !Number.isFinite(precioMax)) {
+    return 'Indica el precio mínimo y el máximo.';
+  }
+  // Los precios son MXN: negativos y "cuesta menos que el tope" no son datos,
+  // son errores de captura.
+  if (precioMin < 0 || precioMax < 0) return 'Los precios no pueden ser negativos.';
+  if (precioMin > precioMax) return 'El precio mínimo no puede ser mayor que el máximo.';
+
+  // Marca y modelo son obligatorios porque son los que acotan la falla a un
+  // vehículo: sin ellos la falla se afirmaría como aplicable a cualquiera y
+  // aparecería en diagnósticos de coches que no la tienen.
+  const vehiculo = normalizarVehiculo(b.vehiculo);
+  if (!vehiculo.marca.trim()) return 'Indica la marca del vehículo.';
+  if (!vehiculo.modelo.trim()) return 'Indica el modelo del vehículo.';
+
+  const { anio, anioDesde, anioHasta } = vehiculo;
+  for (const [campo, valor] of [['el año', anio], ['el año desde', anioDesde], ['el año hasta', anioHasta]]) {
+    if (!Number.isInteger(valor) || valor < 0 || valor > ANIO_MAXIMO) {
+      return `${campo} debe estar entre 0 y ${ANIO_MAXIMO} (0 = no lo sé).`;
+    }
+  }
+  if (anioDesde > anioHasta) {
+    return 'El año desde no puede ser mayor que el año hasta.';
+  }
+  const transmision = vehiculo.transmision;
+  if (!TRANSMISIONES.includes(transmision)) return 'Transmisión no reconocida.';
+
+  if (b.urgencia != null && !URGENCIAS.includes(b.urgencia)) return 'Urgencia no reconocida.';
+  if (b.confianzaDato != null && !CONFIANZAS.includes(b.confianzaDato)) return 'Nivel de confianza no reconocido.';
+
+  if (b.certezaBase != null) {
+    const certeza = Number(b.certezaBase);
+    if (!Number.isFinite(certeza) || certeza < 0 || certeza > 1) {
+      return 'La certeza base debe estar entre 0 y 1.';
+    }
+  }
+  return null;
+}
+
+// El cuerpo que Prolog entiende. Vive en una funcion porque aparece en el POST,
+// en el PUT y en el bootstrap: tres copias se separan en cuanto uno de los tres
+// anade un campo y los otros dos no.
+function payloadProlog(doc) {
+  return {
+    nombre: doc.nombre,
+    sintomas: doc.sintomas || [],
+    vehiculo: doc.vehiculo || {},
+    causas: doc.causas || [],
+    solucion: doc.solucion || '',
+    procedimiento: doc.procedimiento || [],
+    precioMin: doc.precioMin,
+    precioMax: doc.precioMax,
+    moneda: doc.moneda || 'MXN',
+    prologId: doc.prologId,
+    urgencia: doc.urgencia || 'media',
+    confianzaDato: doc.confianzaDato || 'media',
+    fuenteFalla: doc.fuenteFalla || 'Registrado por usuario (Administrador/Mecánico)',
+    certezaBase: doc.certezaBase ?? 0.7,
+  };
+}
+
+// El motor es una copia de trabajo, no la fuente de verdad: MongoDB ya guardo el
+// cambio cuando esto corre. Si Prolog no responde se avisa y se sigue, porque
+// perder la escritura seria peor que dejar el motor desfasado; el bootstrap del
+// siguiente arranque vuelve a poner todo. Por eso no es await: la peticion
+// responde sin esperar al motor.
+function sincronizarFallaConProlog(doc) {
+  fetch(`${PROLOG_BASE}/api/fallas`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payloadProlog(doc)),
+    signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS),
+  }).catch((err) => {
+    console.warn(`[prolog] Falla ${doc.prologId} no sincronizada: ${err.message}`);
+  });
+}
+
+// --- Sesion ---
+// El 401 es el mismo para usuario inexistente y para contraseña incorrecta a
+// proposito: distinguirlos le diria a quien prueba si ese usuario existe.
+app.post('/api/auth/login', async (req, res, next) => {
+  try {
+    const { username, password } = req.body || {};
+    const usuario = await User.findOne({
+      username: typeof username === 'string' ? username.toLowerCase() : '',
+      activo: true,
+    });
+    const coincide = usuario && (await bcrypt.compare(String(password ?? ''), usuario.passwordHash));
+    if (!coincide) return res.status(401).json({ error: 'Credenciales inválidas' });
+
+    // En la sesion va solo el identificador. El rol NO se copia aqui a proposito:
+    // una segunda copia es una segunda fuente de verdad, y `requireAdmin` relee
+    // la cuenta para que una degradacion de rol surta efecto en la peticion
+    // siguiente y no "al proximo inicio de sesion".
+    req.session.userId = usuario._id.toString();
+    res.json({
+      id: usuario._id,
+      username: usuario.username,
+      nombre: usuario.nombre,
+      role: usuario.role,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  req.session.destroy(() => res.json({ ok: true }));
+});
+
+// Se revalida contra MongoDB en cada llamada en vez de confiar solo en la sesion:
+// si el usuario fue desactivado mientras su cookie sigue viva, la sesion por si
+// sola lo daria por autenticado.
+app.get('/api/auth/me', requireAuth, async (req, res, next) => {
+  try {
+    const usuario = await User.findById(req.session.userId).lean();
+    if (!usuario?.activo) {
+      req.session.destroy(() => res.status(401).json({ error: 'Sesión inválida' }));
+      return;
+    }
+    res.json({
+      id: usuario._id,
+      username: usuario.username,
+      nombre: usuario.nombre,
+      role: usuario.role,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- Usuarios ---
+// Todo el CRUD es de administrador. El hash nunca sale: `select('-passwordHash')`
+// en cada lectura, y las respuestas se construyen a mano en vez de devolver el
+// documento, para que un campo nuevo no empiece a filtrar el hash por olvido.
+app.get('/api/usuarios', requireAdmin, async (_req, res, next) => {
+  try {
+    const usuarios = await User.find().select('-passwordHash').sort({ username: 1 }).lean();
+    res.json(usuarios);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/usuarios', requireAdmin, async (req, res, next) => {
+  try {
+    const { username, password, role, nombre } = req.body || {};
+    const usuario = typeof username === 'string' ? username.trim().toLowerCase() : '';
+    if (!usuario || !password) {
+      return res.status(400).json({ error: 'Usuario y contraseña son obligatorios.' });
+    }
+    if (!ROLES.includes(role)) {
+      return res.status(400).json({ error: 'Rol inválido.' });
+    }
+    // 11000 es el codigo de clave duplicada de Mongo. Traducirlo a 409 evita que
+    // el cliente vea un 500 por escribir un usuario que ya existe.
+    if (await User.exists({ username: usuario })) {
+      return res.status(409).json({ error: 'Ese usuario ya existe.' });
+    }
+    const creado = await User.create({
+      username: usuario,
+      passwordHash: await bcrypt.hash(String(password), 10),
+      role,
+      nombre: nombre || undefined,
+    });
+    res.status(201).json({
+      id: creado._id,
+      username: creado.username,
+      nombre: creado.nombre,
+      role: creado.role,
+      activo: creado.activo,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- Regla del ultimo administrador ---
+// Degradar o desactivar al unico administrador deja la instalacion sin forma de
+// entrar por la interfaz, y recuperar eso exige tocar la base a mano. La regla
+// necesita dos operaciones (contar y luego escribir), asi que sin mas dos
+// peticiones simultaneas podrian ver cada una "hay otro" y dejar la cuenta en
+// cero. Se serializan con una cadena de promesas en este proceso: la
+// instalacion es de un solo backend, asi que alcanza; con varias instancias
+// haria falta una transaccion o un contador en un documento unico.
+let candadoUsuarios = Promise.resolve();
+
+function conCandado(fn) {
+  const siguiente = candadoUsuarios.then(fn, fn);
+  candadoUsuarios = siguiente.then(
+    () => {},
+    () => {}
+  );
+  return siguiente;
+}
+
+// Responde si la cuenta, con el cambio propuesto, seria el ultimo
+// administrador activo. `role`/`activo` sin definir significan "se queda como
+// esta", que es como se llama desde la desactivacion y desde una edicion que no
+// toca ninguno de los dos.
+async function ultimaAdminSeQuedariaFuera(objetivo, { role, activo } = {}) {
+  const quedaActivo = activo === undefined ? objetivo.activo : Boolean(activo);
+  const quedaComoAdmin =
+    quedaActivo && (role === undefined ? objetivo.role : role) === 'administrador_mecanico';
+
+  // Si el objetivo no es hoy un administrador activo, o si el cambio no le quita
+  // el rol, no hay nada que proteger.
+  if (objetivo.role !== 'administrador_mecanico' || !objetivo.activo || quedaComoAdmin) {
+    return false;
+  }
+
+  const otros = await User.countDocuments({
+    role: 'administrador_mecanico',
+    activo: true,
+    _id: { $ne: objetivo._id },
+  });
+  return otros === 0;
+}
+
+// Los campos ausentes se dejan como estan: es un PATCH disfrazado de PUT, que es
+// lo que necesita el formulario de edicion, donde la contraseña se reescribe
+// solo si el administrador escribe una nueva.
+app.put('/api/usuarios/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const { password, role, nombre, activo } = req.body || {};
+    if (role != null && !ROLES.includes(role)) {
+      return res.status(400).json({ error: 'Rol inválido.' });
+    }
+
+    const objetivo = await User.findById(req.params.id);
+    if (!objetivo) return res.status(404).json({ error: 'Usuario no encontrado.' });
+
+    // El hash se calcula antes del candado: son ~100 ms de CPU y no necesita
+    // serializarse, mientras que el conteo y el guardado si.
+    const hash = password ? await bcrypt.hash(String(password), 10) : null;
+
+    const error = await conCandado(async () => {
+      if (await ultimaAdminSeQuedariaFuera(objetivo, { role, activo })) {
+        return 'Debe quedar al menos un administrador activo.';
+      }
+      if (role != null) objetivo.role = role;
+      if (nombre != null) objetivo.nombre = nombre;
+      if (activo != null) objetivo.activo = Boolean(activo);
+      if (hash) objetivo.passwordHash = hash;
+      await objetivo.save();
+      return null;
+    });
+    if (error) return res.status(400).json({ error });
+
+    res.json({
+      id: objetivo._id,
+      username: objetivo.username,
+      nombre: objetivo.nombre,
+      role: objetivo.role,
+      activo: objetivo.activo,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/api/usuarios/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const objetivo = await User.findById(req.params.id);
+    if (!objetivo) return res.status(404).json({ error: 'Usuario no encontrado.' });
+
+    const error = await conCandado(async () => {
+      if (await ultimaAdminSeQuedariaFuera(objetivo, { activo: false })) {
+        return 'Debe quedar al menos un administrador activo.';
+      }
+      // Borrado logico, igual que las fallas: desactivar deja constancia de que la
+      // cuenta existio y de quien la creo.
+      objetivo.activo = false;
+      await objetivo.save();
+      return null;
+    });
+    if (error) return res.status(400).json({ error });
+
+    res.json({ ok: true, softDeleted: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- Mi perfil ---
+// Edicion de la propia cuenta. Un administrador puede cambiarlo todo (usuario,
+// nombre, contraseña y su propio rol, incluso degradarse a estudiante); un
+// estudiante solo su nombre y su contraseña. `role`/`username` de un estudiante
+// se ignoran a proposito: sin esta rama, un estudiante podria ascenderse solo.
+// El cambio de rol reutiliza la regla del ultimo administrador, porque degradar
+// a la unica cuenta activa dejaria la instalacion sin nadie que pueda entrar.
+app.put('/api/auth/me', requireAuth, async (req, res, next) => {
+  try {
+    const cuenta = await User.findById(req.session.userId);
+    if (!cuenta?.activo) {
+      req.session.destroy(() => res.status(401).json({ error: 'Sesión inválida' }));
+      return;
+    }
+
+    const esAdmin = cuenta.role === 'administrador_mecanico';
+    const { username, nombre, password, role } = req.body || {};
+
+    if (nombre != null) cuenta.nombre = nombre;
+
+    // La contraseña se reescribe solo si llega algo: vacio significa "dejarla
+    // como esta", igual que en el formulario de edicion del administrador.
+    const hash = password ? await bcrypt.hash(String(password), 10) : null;
+
+    // Solo el administrador cambia su usuario. Si el suyo ya esta tomado, hay
+    // que elegir otro: el indice unico de `username` no admite duplicados.
+    let usernameNuevo = null;
+    if (esAdmin && typeof username === 'string' && username.trim()) {
+      usernameNuevo = username.trim().toLowerCase();
+      if (usernameNuevo !== cuenta.username && (await User.exists({ username: usernameNuevo }))) {
+        return res.status(409).json({ error: 'Ese usuario ya existe.' });
+      }
+    }
+
+    const roleNuevo = esAdmin && role != null ? role : undefined;
+    if (roleNuevo !== undefined && !ROLES.includes(roleNuevo)) {
+      return res.status(400).json({ error: 'Rol inválido.' });
+    }
+
+    const error = await conCandado(async () => {
+      if (await ultimaAdminSeQuedariaFuera(cuenta, { role: roleNuevo })) {
+        return 'Debe quedar al menos un administrador activo.';
+      }
+      if (usernameNuevo) cuenta.username = usernameNuevo;
+      if (roleNuevo !== undefined) cuenta.role = roleNuevo;
+      if (hash) cuenta.passwordHash = hash;
+      await cuenta.save();
+      return null;
+    });
+    if (error) return res.status(400).json({ error });
+
+    res.json({
+      id: cuenta._id,
+      username: cuenta.username,
+      nombre: cuenta.nombre,
+      role: cuenta.role,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- Fallas registradas por el usuario ---
+// Esta lista es la de administracion (lo capturado por el administrador), no el
+// catalogo que consume el diagnostico: ese lo sigue leyendo el gateway a Prolog,
+// que ya devuelve estaticas y dinamicas juntas.
+app.get('/api/fallas', requireAdmin, async (req, res, next) => {
+  try {
+    const incluirEliminadas = req.query.includeDeleted === 'true';
+    const filtro = incluirEliminadas ? {} : { deletedAt: null };
+    // El autor se resuelve con populate, que es la capa que sabe sustituir un
+    // ObjectId por su documento. Asignar el objeto encontrado encima del campo
+    // a mano lo pasa por el casteo del schema y el hash de la relacion se
+    // convierte en un id roto.
+    const fallas = await Falla.find(filtro)
+      .sort({ createdAt: -1 })
+      .populate('creadoPor', 'username nombre')
+      .lean();
+    res.json(fallas);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/fallas', requireAdmin, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const error = validarFalla(b);
+    if (error) return res.status(400).json({ error });
+
+    const prologId = slugPrologId(b.nombre);
+    // El indice unico es parcial sobre `deletedAt: null`, asi que este es el
+    // unico filtro que decide si el identificador esta libre.
+    if (await Falla.exists({ prologId, deletedAt: null })) {
+      return res.status(409).json({ error: `Ya existe una falla con el identificador "${prologId}".` });
+    }
+
+    const creada = await Falla.create({
+      nombre: b.nombre.trim(),
+      prologId,
+      sintomas: b.sintomas.map((s) => s.trim()).filter(Boolean),
+      vehiculo: normalizarVehiculo(b.vehiculo),
+      causas: (b.causas || []).filter(Boolean),
+      solucion: b.solucion || '',
+      procedimiento: (b.procedimiento || []).filter(Boolean),
+      precioMin: Number(b.precioMin),
+      precioMax: Number(b.precioMax),
+      // La cuenta la revalidó requireAdmin en esta misma peticion, así que el
+      // autor no depende de lo que la sesión diga de sí misma.
+      creadoPor: req.admin._id,
+      activo: true,
+      deletedAt: null,
+      confianzaDato: b.confianzaDato || 'media',
+      urgencia: b.urgencia || 'media',
+      certezaBase: b.certezaBase != null ? Number(b.certezaBase) : 0.7,
+    });
+
+    sincronizarFallaConProlog(creada);
+    res.status(201).json(creada);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.put('/api/fallas/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const falla = await Falla.findById(req.params.id);
+    if (!falla || falla.deletedAt) {
+      return res.status(404).json({ error: 'Falla no encontrada.' });
+    }
+
+    // Se valida el documento completo ya fusionado, no solo el cuerpo: si el
+    // formulario edita el precio minimo y lo deja por encima del maximo, el
+    // resultado tiene que ser rechazado aunque el cuerpo sea coherente.
+    const b = { ...falla.toObject(), ...req.body };
+    const error = validarFalla(b);
+    if (error) return res.status(400).json({ error });
+
+    falla.nombre = b.nombre.trim();
+    falla.sintomas = b.sintomas.map((s) => s.trim()).filter(Boolean);
+    falla.vehiculo = normalizarVehiculo(b.vehiculo);
+    falla.causas = (b.causas || []).filter(Boolean);
+    falla.solucion = b.solucion || '';
+    falla.procedimiento = (b.procedimiento || []).filter(Boolean);
+    falla.precioMin = Number(b.precioMin);
+    falla.precioMax = Number(b.precioMax);
+    falla.confianzaDato = b.confianzaDato || 'media';
+    falla.urgencia = b.urgencia || 'media';
+    falla.certezaBase = b.certezaBase != null ? Number(b.certezaBase) : 0.7;
+    await falla.save();
+
+    // El prologId no se recalcula al renombrar: es el identificador con el que la
+    // falla ya se afirmo en Prolog y con el que se borraria. Regenerarlo dejaria
+    // reglas huerfanas apuntando al nombre viejo.
+    sincronizarFallaConProlog(falla);
+    res.json(falla);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/api/fallas/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const falla = await Falla.findById(req.params.id);
+    if (!falla || falla.deletedAt) {
+      return res.status(404).json({ error: 'Falla no encontrada.' });
+    }
+
+    falla.activo = false;
+    falla.deletedAt = new Date();
+    await falla.save();
+
+    fetch(`${PROLOG_BASE}/api/fallas?prologId=${encodeURIComponent(falla.prologId)}`, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS),
+    }).catch((err) => {
+      console.warn(`[prolog] Falla ${falla.prologId} no retractada: ${err.message}`);
+    });
+
+    res.json({ ok: true, softDeleted: true });
   } catch (err) {
     next(err);
   }
