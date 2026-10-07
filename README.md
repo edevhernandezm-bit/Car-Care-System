@@ -9,6 +9,11 @@ Sistema Experto para detectar fallas automotrices
 
 -El sistema experto en prolog se conecta mediante un front end web (HTML,CSS Y JS) para asi consultarlo en una interfaz amigable al usuario
 
+-Tiene cuentas de usuario: el administrador gestiona con quien entra (CRUD de
+usuarios y de fallas del catalogo), y el estudiante se limita a diagnosticar y
+consultar. Cada quien edita su propio perfil (nombre, contraseña y, el admin,
+usuario y rol).
+
 ## Como levantarlo
 
 ### Requisitos
@@ -22,9 +27,29 @@ Sistema Experto para detectar fallas automotrices
 Instala dependencias una sola vez:
 
 ```bash
-cd backend  && npm install
-cd ../frontend && npm install
+npm run setup
 ```
+
+(o, a mano: `cd backend && npm install` y `cd ../frontend && npm install`).
+
+### Primeros pasos (cuentas y sesion)
+
+Sin bases de datos solo se ve la pagina de inicio de sesion. El sistema con
+sesiones necesita un administrador inicial, que se crea la primera vez que
+arranca la API contra una base vacia a partir del entorno:
+
+1. Copia el ejemplo de entorno:
+   ```powershell
+   Copy-Item backend\.env.example backend\.env
+   ```
+2. Edita `backend\.env` y define al menos `SESSION_SECRET` (cualquier frase) y
+   las credenciales del primer administrador:
+   - `ADMIN_USERNAME` (p. ej. `admin`)
+   - `ADMIN_PASSWORD` (p. ej. `admin123`, cambiala)
+   - `ADMIN_NOMBRE` (opcional, por defecto `Administrador`)
+
+Si la base ya tiene usuarios, esas variables no tocan nada: el administrador
+semilla solo se crea cuando la coleccion de usuarios esta vacia.
 
 ### Arranque
 
@@ -40,8 +65,9 @@ este abierto antes de devolver el control.
 .\scripts\start-dev.ps1
 ```
 
-Abre <http://localhost:5173>. El navegador solo habla con ese puerto: Vite hace
-de proxy hacia Express, y Express es el unico que habla con el motor.
+Abre <http://localhost:5173> y entra con la cuenta administrador definida en
+`backend\.env`. El navegador solo habla con ese puerto: Vite hace de proxy hacia
+Express, y Express es el unico que habla con el motor.
 
 Para detener:
 
@@ -59,9 +85,10 @@ Para detener:
 
 ### Pruebas automatizadas
 
-Las pruebas de la lógica de presentación (`frontend/src/lib/diagnostico.js`:
-búsqueda con y sin tildes, cortes de certeza, conversión de moneda) no necesitan
-ni navegador ni base de datos:
+Las pruebas automatizadas de la logica de presentacion
+(`frontend/src/lib/*.test.js`: busqueda con y sin tildes, cortes de certeza,
+conversion de moneda, validacion del formulario de fallas) no necesitan ni
+navegador ni base de datos:
 
 ```bash
 cd frontend && npm test
@@ -77,6 +104,12 @@ La suite levanta su propio stack (motor, API, Vite y Mongo) contra una base
 `car_care_e2e` que se borra al terminar, asi que no toca los datos de
 desarrollo.
 
+Desde la raiz, todo de una vez:
+
+```bash
+npm test
+```
+
 ### Variables de entorno
 
 | Variable | Por defecto | Para que sirve |
@@ -84,6 +117,27 @@ desarrollo.
 | `PORT` | `5000` | Puerto de la API. Vite lo lee para apuntar su proxy, asi que basta con definirla en un solo lado |
 | `MONGO_URI` | `mongodb://localhost:27017/car_care_system` | Conexion a MongoDB |
 | `PROLOG_BASE` | `http://localhost:8000` | Direccion del motor para el gateway |
-| `PROLOG_TIMEOUT_MS` | `8000` | Tiempo maximo de espera del gateway |
+| `PROLOG_TIMEOUT_MS` | `3000` | Tiempo maximo de espera del gateway |
 | `CORS_ORIGIN` | `http://localhost:5173` | Origenes permitidos, separados por comas, o `*` |
+| `SESSION_SECRET` | valor de desarrollo | Frase que firma las cookies de sesion; cambiala en produccion |
+| `ADMIN_USERNAME` | — | Usuario del primer administrador (solo si la base esta vacia) |
+| `ADMIN_PASSWORD` | — | Contraseña del primer administrador (solo si la base esta vacia) |
+| `ADMIN_NOMBRE` | `Administrador` | Nombre visible del primer administrador |
 | `SWIPL` | instalacion estandar | Ruta a `swipl.exe` |
+
+### Instalacion con Docker (opcional)
+
+En vez de instalar MongoDB, SWI-Prolog y Node localmente se puede correr cada
+pieza en un contenedor. Hay Dockerfile para el motor (`Prolog/Dockerfile`, expone
+el 8000) y para la API (`backend/Dockerfile`, expone el 5000):
+
+```powershell
+docker run -d --name car-care-mongo  -p 27017:27017 mongo:7
+docker build -t car-care-prolog -f Prolog/Dockerfile Prolog
+docker run -d --name car-care-prolog -p 8000:8000 car-care-prolog
+docker build -t car-care-api -f backend/Dockerfile backend
+docker run -d --name car-care-api -p 5000:5000 --env-file backend\.env car-care-api
+```
+
+El frontend se sigue corriendo con Vite en local (`npm run setup` + scripts de
+arranque); no hay imagen para el frontend.
