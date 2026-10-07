@@ -88,7 +88,8 @@ export default function FallaForm({
   // escribio. Se muestran aparte y sin checkbox: si no, al editar la falla un
   // sintoma propio aparecia marcado como si fuera del catalogo, y desmarcar esa
   // casilla lo borraba de verdad.
-  const delCatalogo = (sintomasCatalogo || []).filter((s) => !valor.sintomas.includes(s.nombre));
+  const sintomasMarcados = new Set(valor.sintomas);
+  const delCatalogo = (sintomasCatalogo || []).filter((s) => !sintomasMarcados.has(s.nombre));
   const propios = valor.sintomas.filter(
     (s) => !(sintomasCatalogo || []).some((c) => c.nombre === s)
   );
@@ -183,7 +184,7 @@ export default function FallaForm({
                 <label className="checkbox-item" key={s.id ?? s.nombre}>
                   <input
                     type="checkbox"
-                    checked={valor.sintomas.includes(s.nombre)}
+                    checked={sintomasMarcados.has(s.nombre)}
                     onChange={(e) => alternar(s.nombre, e.target.checked)}
                   />
                   <span>{s.nombre}</span>
