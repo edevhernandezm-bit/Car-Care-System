@@ -4,6 +4,13 @@ import BaseConocimiento from './components/BaseConocimiento.jsx';
 import EstadisticasCerteza from './components/EstadisticasCerteza.jsx';
 import MotorBanner from './components/MotorBanner.jsx';
 import Paso1Vehiculo from './components/Paso1Vehiculo.jsx';
+
+import Login from './components/Login.jsx';
+import AgregarFalla from './components/AgregarFalla.jsx';
+import AdministrarFallas from './components/AdministrarFallas.jsx';
+import AdministrarUsuarios from './components/AdministrarUsuarios.jsx';
+import Perfil from './components/Perfil.jsx';
+import { useAuth } from './context/AuthContext.jsx';
 import Paso2Sintomas from './components/Paso2Sintomas.jsx';
 import Resultados from './components/Resultados.jsx';
 import { useCatalogosIngeniero } from './hooks/useCatalogosIngeniero.js';
@@ -33,7 +40,52 @@ const SECCIONES = [
     titulo: 'Estadísticas',
     subtitulo: 'Qué tan certeza ha dado el sistema en los diagnósticos emitidos.',
   },
+  // Las tres de administracion viven en la misma lista y no en un segundo
+  // bloque junto al menu: al escribirlas aparte, `seccion` no las encontraba y
+  // el encabezado caia en SECCIONES[0], de modo que administering usuarios
+  // anunciaba "Analisis de Fallas". `soloAdmin` es la unica diferencia entre
+  // ellas y las de lectura, asi que se filtra en un punto en vez de duplicar
+  // la lista entera.
+  {
+    id: 'agregar-falla',
+    etiqueta: 'Agregar falla',
+    titulo: 'Agregar falla',
+    subtitulo: 'Registra una falla nueva y su conocimiento asociado en el motor.',
+    soloAdmin: true,
+  },
+  {
+    id: 'administrar-fallas',
+    etiqueta: 'Administrar fallas',
+    titulo: 'Administrar fallas',
+    subtitulo: 'Edita o retira fallas que el sistema experto ofrece al diagnostico.',
+    soloAdmin: true,
+  },
+  {
+    id: 'administrar-usuarios',
+    etiqueta: 'Administrar usuarios',
+    titulo: 'Administrar usuarios',
+    subtitulo: 'Crea cuentas y decide quien puede capturar fallas.',
+    soloAdmin: true,
+  },
+  // `oculto` la saca del menu lateral: se llega a ella solo desde el circulo de
+  // iniciales de la barra superior, que es su unico punto de entrada.
+  {
+    id: 'perfil',
+    etiqueta: 'Mi perfil',
+    titulo: 'Mi perfil',
+    subtitulo: 'Actualiza tus datos de acceso y tu contraseña.',
+    oculto: true,
+  },
 ];
+
+// Dos letras para el circulo de la barra superior: las iniciales del nombre, o
+// las del usuario si no hay nombre. Sin esto el badge mostraba siempre "AN".
+function inicialesDe(usuario) {
+  const base = (usuario?.nombre || usuario?.username || '').trim();
+  if (!base) return '?';
+  const partes = base.split(/\s+/);
+  return (partes.length > 1 ? partes[0][0] + partes[1][0] : base.slice(0, 2)).toUpperCase();
+}
 
 const fechaHoy = new Date().toLocaleDateString('es-ES', {
   weekday: 'long',
@@ -95,7 +147,25 @@ export default function App() {
   const [vista, setVista] = useState('cuestionario');
   const peticionRef = useRef(0);
   const { catalogos, status } = useCatalogosIngeniero();
-  const seccion = SECCIONES.find((s) => s.id === section) ?? SECCIONES[0];
+  const { user, loading, logout } = useAuth();
+  const esAdmin = user?.role === 'administrador_mecanico';
+  const seccionesVisibles = useMemo(
+    () => SECCIONES.filter((s) => !s.soloAdmin || esAdmin),
+    [esAdmin]
+  );
+  // El menu lateral no lista las ocultas (`Mi perfil`): su entrada es el badge.
+  const seccionesMenu = useMemo(
+    () => seccionesVisibles.filter((s) => !s.oculto),
+    [seccionesVisibles]
+  );
+  const seccion = seccionesVisibles.find((s) => s.id === section) ?? seccionesVisibles[0];
+
+  // El logout no necesita ruta: vaciar la sesion deja a `user` en null y el
+  // render de abajo ya muestra el formulario de ingreso. Navegar a /login
+  // exigiria un router que este proyecto no usa.
+  const handleLogout = () => {
+    logout();
+  };
 
   // La barra de búsqueda solo se pinta donde de verdad filtra. El buscador es
   // global, pero cada pantalla consume la consulta o no: Fallas Comunes,
@@ -202,6 +272,13 @@ export default function App() {
     />
   );
 
+  // Sin sesion no hay nada que mostrar: los catalogos y el diagnostico son
+  // de lectura, pero las secciones de administracion escriben en MongoDB, asi
+  // que pintar el shell sin usuario solo exponia botones que el backend iba a
+  // rechazar con 401.
+  if (loading) return <p className="app-loading">Cargando sesion...</p>;
+  if (!user) return <Login />;
+
   return (
     <>
       <a className="skip-link" href="#content-area">
@@ -222,7 +299,7 @@ export default function App() {
             </div>
           </div>
           <nav className="menu" aria-label="Secciones del sistema">
-            {SECCIONES.map((s) => (
+            {seccionesMenu.map((s) => (
               <button
                 key={s.id}
                 className={`menu-item ${section === s.id ? 'active' : ''}`}
@@ -232,6 +309,9 @@ export default function App() {
                 {s.etiqueta}
               </button>
             ))}
+            {user && (
+              <button className="menu-item" onClick={handleLogout}>Cerrar sesión</button>
+            )}
           </nav>
         </aside>
 
@@ -243,7 +323,16 @@ export default function App() {
             </div>
             <div className="topbar-actions">
               <p className="topbar-date">{fechaHoy}</p>
-              <div className="profile-badge" aria-hidden="true">AN</div>
+              <button
+                type="button"
+                className="profile-badge"
+                onClick={() => setSection('perfil')}
+                aria-label="Mi perfil"
+                aria-current={section === 'perfil' ? 'page' : undefined}
+                title="Mi perfil"
+              >
+                {inicialesDe(user)}
+              </button>
             </div>
           </header>
 
@@ -252,7 +341,7 @@ export default function App() {
               <h2 id="section-title">{seccion.titulo}</h2>
               <p className="section-subtitle">{seccion.subtitulo}</p>
             </div>
-            {mostrarBusqueda && (
+{mostrarBusqueda && (
               <div className="search-box">
                 <label className="sr-only" htmlFor="busquedaGlobal">
                   Buscar por falla, categoría o síntoma
@@ -262,10 +351,10 @@ export default function App() {
                   type="search"
                   value={searchQuery}
                   /* Aqui no se normaliza nada. El input es controlado, asi que un
-                     trim() en cada tecla se comia el espacio que el usuario acababa
-                     de escribir y la siguiente letra se pegaba a la anterior:
-                     "pastillas freno" nunca existio. La normalizacion (minusculas,
-                     tildes, tokens) vive en coincide(), en lib/diagnostico.js. */
+                      trim() en cada tecla se comia el espacio que el usuario acababa
+                      de escribir y la siguiente letra se pegaba a la anterior:
+                      "pastillas freno" nunca existio. La normalizacion (minusculas,
+                      tildes, tokens) vive en coincide(), en lib/diagnostico.js. */
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Buscar por falla, categoría o síntoma..."
                 />
@@ -296,6 +385,10 @@ export default function App() {
                 onLimpiarBusqueda={() => setSearchQuery('')}
               />
             )}
+            {section === 'agregar-falla' && esAdmin && <AgregarFalla />}
+            {section === 'administrar-fallas' && esAdmin && <AdministrarFallas />}
+            {section === 'administrar-usuarios' && esAdmin && <AdministrarUsuarios />}
+            {section === 'perfil' && <Perfil />}
           </section>
         </main>
       </div>

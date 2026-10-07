@@ -394,16 +394,103 @@ h4 {
   font-size: 0.95rem;
 }
 
+/* El circulo con las iniciales del usuario: un boton que lleva a "Mi perfil".
+   Sin el reset del borde, el tema del navegador le pintaria su propio canto. */
 .profile-badge {
   flex: none;
   display: grid;
   place-items: center;
   width: 48px;
   height: 48px;
-  border-radius: var(--radius-input);
+  border: 1px solid transparent;
+  border-radius: 50%;
   background: var(--primary);
   color: var(--on-primary);
   font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.profile-badge:hover {
+  background: var(--primary-hover);
+}
+
+.profile-badge:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.form-section {
+  margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.form-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.form-section-label {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin-bottom: 8px;
+  display: block;
+}
+
+/* Grupos de campos dentro de secciones */
+.form-group {
+  margin-bottom: 12px;
+}
+
+.form-group-label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+/* Para inputs y selects dentro de grupos */
+.form-group.input-group > input,
+.form-group.input-group > select,
+.form-group.input-group > textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-input);
+  padding: 12px 14px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.form-group.input-group > select {
+  cursor: pointer;
+}
+
+/* Foco */
+.form-group.input-group > input:focus-visible,
+.form-group.input-group > select:focus-visible {
+  outline: none;
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 3px rgba(147, 164, 255, 0.35);
+}
+
+/* Errores inline */
+.form-group.error > input[aria-invalid='true'],
+.form-group.error > select[aria-invalid='true'] {
+  border-color: var(--danger-text);
+  background: var(--danger-surface);
+}
+
+.form-group.error > input[aria-invalid='true']:focus-visible,
+.form-group.error > select[aria-invalid='true']:focus-visible {
+  border-color: var(--danger-text);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.45);
 }
 
 .page-intro {
@@ -1709,6 +1796,280 @@ h4 {
    segura es esta falla", que es otro numero y no el que codifica la barra. */
 .stats-fill {
   background: var(--accent-text);
+}
+
+/* --- Ingreso ---
+   Sin barra lateral: antes de entrar todavia no hay seccion que se pueda elegir, y un
+   menu que promete pantallas inaccesibles es peor que no tener menu. */
+.login-shell {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: var(--shell-pad-y) var(--shell-pad-x);
+}
+
+.login-card {
+  display: grid;
+  gap: 10px;
+  width: min(420px, 100%);
+  padding: var(--card-pad);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.login-card h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+}
+
+.login-subtitle {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.login-card label {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+.login-card input {
+  width: 100%;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-input);
+  padding: 14px 16px;
+  background: var(--control-bg);
+  color: var(--text);
+}
+
+.login-card input:focus-visible {
+  outline: none;
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 3px rgba(147, 164, 255, 0.35);
+}
+
+.login-card .primary-btn {
+  width: 100%;
+  min-height: 44px;
+}
+
+/* Espera de sesion. No es un error ni un formulario: mientras /api/auth/me no
+   contesta no se sabe todavia si hay que pintar el login o la aplicacion, y
+   pintar el login un instante antes de la respuesta hacia parpadear. */
+.app-loading {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+
+/* --- Pantallas de administracion --- */
+.admin-sintomas {
+  display: grid;
+  gap: 12px;
+  grid-column: 1 / -1;
+}
+
+.admin-field-label {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.admin-sintomas-lista {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+}
+
+.admin-propios {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-propios li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  background: var(--surface-sunken);
+}
+
+.admin-sintoma-nuevo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.admin-sintoma-nuevo label {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-sintoma-nuevo label > span {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.admin-sintoma-nuevo input,
+.admin-sintomas input[type='search'] {
+  width: 100%;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-input);
+  padding: 12px 14px;
+  background: var(--control-bg);
+  color: var(--text);
+}
+
+/* El identificador en el motor se muestra en mono como dato de instrumento, y no
+   como texto a copiar: es la clave con la que Prolog conoce la falla. */
+.admin-prologid {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+  background: none;
+  padding: 0;
+  border: 0;
+}
+
+.admin-prologid code {
+  font-family: var(--font-mono);
+  color: var(--muted-strong);
+}
+
+.admin-tabla-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+.admin-tabla {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.admin-tabla th,
+.admin-tabla td {
+  padding: 12px 14px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-tabla thead th {
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  background: var(--surface-sunken);
+}
+
+.admin-tabla tbody tr:last-child th,
+.admin-tabla tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.admin-precios {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.admin-acciones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Una fila eliminada no desaparece (el registro sigue existiendo) pero deja de
+   leerse como disponible: baja opacidad en el texto, no en el fondo, para no
+   perder el contraste del texto secundario. */
+.admin-fila-borrada th,
+.admin-fila-borrada td {
+  opacity: 0.62;
+}
+
+.admin-tu {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.admin-alta {
+  display: grid;
+  gap: 14px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-alta h4 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+.admin-edicion {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.admin-edicion label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.admin-edicion input,
+.admin-edicion select {
+  width: 100%;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-input);
+  padding: 10px 12px;
+  background: var(--control-bg);
+  color: var(--text);
+}
+
+@media (max-width: 720px) {
+  .admin-sintoma-nuevo,
+  .admin-edicion {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* La app anima transiciones en botones, campos y el enlace de salto. Con la

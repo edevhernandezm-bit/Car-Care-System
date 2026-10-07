@@ -1,17 +1,6 @@
 import { useRef, useState } from 'react';
 
-const TRANSMISIONES = [
-  { valor: 'desconocida', etiqueta: 'No lo sé' },
-  { valor: 'manual', etiqueta: 'Manual' },
-  { valor: 'automatica', etiqueta: 'Automática' },
-  { valor: 'cvt', etiqueta: 'CVT' },
-  { valor: 'dct', etiqueta: 'DCT' },
-];
-
-// "El motor no usa el año para decidir: solo acota las fallas por modelo, asi
-// que cualquier año dentro del rango sirve. El maximo se calcula al montar
-// para no quedar en un 2025 fijo que envejece con el calendario."
-const ANIO_MAXIMO = new Date().getFullYear();
+import { ANIO_MAXIMO, TRANSMISIONES } from '../lib/fallas.js';
 
 function validar(anioTexto) {
   const anio = Number.parseInt(anioTexto, 10);

@@ -190,6 +190,20 @@ export default function Resultados({ resultados, onVolver, onCambiarVehiculo }) 
                   <div className="card-body">
                     <BarraCerteza certeza={f.certeza} />
                     <BloqueCosto falla={f} tasa={tasa} />
+                    {/* Las causas las declaran las fallas registradas por el
+                        usuario; la base estática no las modela, así que llegan
+                        vacías y el bloque no se pinta. La comprobar evita dejar
+                        un encabezado sin contenido debajo. */}
+                    {f.causas?.length > 0 && (
+                      <div className="card-section">
+                        <h4>Causas probables</h4>
+                        <ul className="solutions-list">
+                          {f.causas.map((c, i) => (
+                            <li key={`${c}-${i}`}>{c}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                     {f.reparaciones.length > 0 && (
                       <div className="card-section">
                         <h4>Pasos de reparación</h4>

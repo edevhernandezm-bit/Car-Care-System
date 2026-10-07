@@ -8,6 +8,33 @@ const API_DIAGNOSTICOS = '/api/diagnosticos';
 const API_STATS_CERTEZA = '/api/stats/certeza';
 const API_TIPO_CAMBIO = '/api/config/tipo-cambio';
 
+// Wrapper de fetch para las rutas propias del backend (auth, usuarios, fallas
+// registradas). Reusa el mismo origin que el resto de lib/api.js: el navegador
+// manda la cookie de sesion sola, no hace falta token ni header Authorization.
+// La cookie de sesion es HttpOnly, asi que no puede mandarse desde JS; por eso
+// hay que usar `credentials: 'same-origin'` explicito y no confiar en el default.
+export async function apiFetch(ruta, options = {}) {
+  const res = await fetch(ruta, {
+    credentials: 'same-origin',
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+  });
+  if (res.status === 401) throw new Error('No autenticado');
+  if (!res.ok) {
+    let detalle = '';
+    try {
+      const cuerpo = await res.json();
+      detalle = cuerpo.error || cuerpo.mensaje || '';
+    } catch (_) {
+      // El servidor puede responder con texto plano o HTML; el status ya basta
+      // para decidir que fallo, y el detalle solo mejora el mensaje.
+    }
+    throw new Error(detalle || `Error ${res.status}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
 // El motor de Prolog es la única fuente de verdad: los catálogos de síntomas y
 // fallas se leen de sus endpoints, nunca desde una copia local en el navegador.
 // `signal` es el AbortSignal que react-query aborta al desmontar el consumidor.
