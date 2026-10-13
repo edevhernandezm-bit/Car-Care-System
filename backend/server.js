@@ -95,6 +95,15 @@ function sanitizeUri(uri) {
 }
 
 // Sesiones
+// En produccion no hay secreto por defecto: el del repositorio permitiria
+// fabricar una cookie de sesion valida. El arranque falla con un mensaje claro
+// en vez de aceptarlo en silencio.
+if (process.env.NODE_ENV === 'production' && !process.env.SESSION_SECRET) {
+  console.error(
+    '[config] Falta SESSION_SECRET. En produccion no se usa el secreto de desarrollo: definela en el entorno.'
+  );
+  process.exit(1);
+}
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-session-secret-cambiar-en-prod',
   resave: false,

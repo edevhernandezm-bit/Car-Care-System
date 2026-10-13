@@ -93,7 +93,14 @@ try {
     if (Get-ProcesoEnPuerto $PuertoApi) {
         Write-Host "La API ya escucha en $PuertoApi."
     } else {
-        $api = Start-Process -FilePath 'node' -ArgumentList 'server.js' `
+        # La API lee backend/.env si existe (lo mismo que `npm run dev`); en un
+        # clon sin .env arranca con los valores por defecto del codigo.
+        $argumentosApi = if (Test-Path -LiteralPath (Join-Path $Backend '.env')) {
+            @('--env-file=.env', 'server.js')
+        } else {
+            @('server.js')
+        }
+        $api = Start-Process -FilePath 'node' -ArgumentList $argumentosApi `
             -WorkingDirectory $Backend `
             -RedirectStandardOutput (Join-Path $LogDir 'api.out') `
             -RedirectStandardError  (Join-Path $LogDir 'api.err') `

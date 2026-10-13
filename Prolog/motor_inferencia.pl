@@ -1336,8 +1336,19 @@ puerto_ocupado(Puerto) :-
     catch(tcp_close_socket(S), _, true),
     Resultado == ocupado.
 
-% Comando para arrancar el servidor
-server :- server(8000).
+% Comando para arrancar el servidor. El puerto lo puede fijar el contenedor con
+% PORT; sin la variable queda el 8000 de siempre, que es el que usan los scripts
+% locales. server/1 sigue disponible para forzar otro puerto a mano.
+server :-
+    (   catch(getenv('PORT', Valor), _, fail),
+        Valor \== '',
+        atom_string(Valor, Texto),
+        number_string(Puerto, Texto),
+        integer(Puerto)
+    ->  true
+    ;   Puerto = 8000
+    ),
+    server(Puerto).
 server(Puerto) :-
     (   puerto_ocupado(Puerto)
     ->          format(user_error, '[!] El puerto ~w ya esta ocupado.~n', [Puerto]),
