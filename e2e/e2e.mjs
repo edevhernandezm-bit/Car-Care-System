@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { request as peticionHttp } from 'node:http';
 import {
   existsSync,
   mkdtempSync,
@@ -500,18 +501,86 @@ test('09b | Gateway Prolog: el motor sigue respondiendo su propio preflight', as
   assert.match(res.headers.get('access-control-allow-headers') || '', /Content-Type/i);
 });
 
+// El gateway solo publica la inferencia y las lecturas del catálogo, y exige
+// sesión. Las pruebas de esta zona crean su propia cuenta para no depender de
+// los usuarios que arma la fase 6.
+const CUENTA_GATEWAY = { username: 'gateway_e2e', password: 'clave-gateway-e2e' };
+
+async function sesionGateway() {
+  await usuarioEnMongo({
+    ...CUENTA_GATEWAY,
+    role: 'administrador_mecanico',
+    nombre: 'Gateway E2E',
+  });
+  const ingreso = await api('/api/auth/login', {
+    method: 'POST',
+    body: { username: CUENTA_GATEWAY.username, password: CUENTA_GATEWAY.password },
+  });
+  assert.equal(ingreso.status, 200, 'la cuenta del gateway debe poder iniciar sesión');
+  return ingreso.cookie;
+}
+
+// Peticiones al gateway con la cookie de sesión a mano: fetch de Node no la
+// conserva entre llamadas. `gatewayProxy` sale por el proxy de Vite, que es el
+// camino real del navegador; `gateway` va directo a la API, donde vive la
+// comprobación de la lista blanca.
+function peticionGateway(base, ruta, { method = 'GET', body, cookie } = {}) {
+  return fetch(`${base}${ruta}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+const gateway = (ruta, opciones) => peticionGateway(API_URL, ruta, opciones);
+const gatewayProxy = (ruta, opciones) => peticionGateway(WEB_URL, ruta, opciones);
+
+// Petición HTTP con la ruta literal, sin la normalización de ".." que hace
+// `fetch`: es lo que puede mandar un cliente que no sea un navegador.
+function peticionCruda(puerto, ruta, cookie) {
+  return new Promise((resolve, reject) => {
+    const req = peticionHttp(
+      {
+        host: 'localhost',
+        port: puerto,
+        path: ruta,
+        method: 'GET',
+        headers: cookie ? { Cookie: cookie } : {},
+      },
+      (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      }
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+const DIAGNOSTICO_GATEWAY = {
+  marca: 'gen',
+  modelo: 'gen',
+  anio: 0,
+  transmision: 'desconocida',
+  sintomas: ['chirrido_al_frenar'],
+};
+
 test('09c | Gateway Prolog: el navegador llega al motor por el proxy de Vite → Express', async () => {
   // Este es el camino que usa la app real: nada de localhost:8000 en el cliente.
-  const sintomas = await (await fetch(`${WEB_URL}/api/prolog/api/sintomas`)).json();
+  const cookie = await sesionGateway();
+
+  const sintomas = await (await gatewayProxy('/api/prolog/api/sintomas', { cookie })).json();
   assert.equal(sintomas.status, 'success');
   assert.ok(Array.isArray(sintomas.sintomas));
   assert.equal(sintomas.sintomas.length, 38, 'el gateway debe servir el catálogo completo');
 
   const diag = await (
-    await fetch(`${WEB_URL}/api/prolog/api/diagnostico`, {
+    await gatewayProxy('/api/prolog/api/diagnostico', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ marca: 'gen', modelo: 'gen', anio: 0, transmision: 'desconocida', sintomas: ['chirrido_al_frenar'] }),
+      cookie,
+      body: DIAGNOSTICO_GATEWAY,
     })
   ).json();
   assert.equal(diag.status, 'success');
@@ -540,7 +609,12 @@ test('09d | Gateway Prolog: 502 cuando el motor no responde, sin filtrar el erro
   try {
     await sondeo(`http://localhost:${puertoMuerto}/api/config/tipo-cambio`, { timeout: 30000 });
 
-    const res = await fetch(`http://localhost:${puertoMuerto}/api/prolog/api/sintomas`);
+    // La sesión se guarda en Mongo, así que la cookie de la API principal vale
+    // también en esta segunda instancia.
+    const cookie = await sesionGateway();
+    const res = await fetch(`http://localhost:${puertoMuerto}/api/prolog/api/sintomas`, {
+      headers: { Cookie: cookie },
+    });
     assert.equal(res.status, 502, 'sin motor detras, el gateway debe responder 502');
 
     const cuerpo = await res.json();
@@ -552,6 +626,65 @@ test('09d | Gateway Prolog: 502 cuando el motor no responde, sin filtrar el erro
     );
   } finally {
     if (proc.pid) matarArbol(proc.pid);
+  }
+});
+
+test('09e | Gateway Prolog: sin sesión no se llega al motor', async () => {
+  const catalogo = await gateway('/api/prolog/api/sintomas');
+  assert.equal(catalogo.status, 401, 'leer el catálogo sin sesión debe ser 401');
+
+  const diag = await gateway('/api/prolog/api/diagnostico', {
+    method: 'POST',
+    body: DIAGNOSTICO_GATEWAY,
+  });
+  assert.equal(diag.status, 401, 'inferir sin sesión debe ser 401');
+  assert.equal((await diag.json()).error, 'No autenticado');
+});
+
+test('09f | Gateway Prolog: ni el administrador modifica el catálogo por el gateway', async () => {
+  const cookie = await sesionGateway();
+
+  // La ruta se puede leer, no borrar: el catálogo se modifica por /api/fallas.
+  const borrado = await gateway('/api/prolog/api/fallas?prologId=lo_que_sea', {
+    method: 'DELETE',
+    cookie,
+  });
+  assert.equal(borrado.status, 405, 'borrar por el gateway debe estar prohibido');
+  assert.match(
+    borrado.headers.get('allow') || '',
+    /GET/,
+    'el 405 debe anunciar los métodos permitidos'
+  );
+
+  // El bootstrap no está publicado en absoluto.
+  const bootstrap = await gateway('/api/prolog/api/fallas/bootstrap', {
+    method: 'POST',
+    cookie,
+    body: { fallas: [] },
+  });
+  assert.equal(bootstrap.status, 404, 'el bootstrap no debe ser alcanzable');
+
+  // Y el catálogo conserva sus 54 fallas: ninguna de esas peticiones llegó.
+  const fallas = await (await gateway('/api/prolog/api/fallas', { cookie })).json();
+  assert.equal(fallas.fallas.length, 54, 'el catálogo no debe quedar tocado');
+});
+
+test('09g | Gateway Prolog: las rutas con trucos no coinciden con la lista', async () => {
+  const cookie = await sesionGateway();
+
+  // fetch normaliza ".." antes de enviarlo, así que la subida de directorio se
+  // prueba con una petición cruda: es lo que puede mandar un cliente que no sea
+  // un navegador (curl --path-as-is, o un socket a mano).
+  const traversal = await peticionCruda(PUERTO_API, '/api/prolog/api/../api/sintomas', cookie);
+  assert.equal(traversal, 404, 'el recorrido de directorios debe quedar fuera');
+
+  for (const ruta of [
+    '/api/prolog/api/%73intomas',
+    '/api/prolog/api/sintomas/',
+    '/api/prolog//api/sintomas',
+  ]) {
+    const res = await gateway(ruta, { cookie });
+    assert.equal(res.status, 404, `${ruta} debe responder 404`);
   }
 });
 

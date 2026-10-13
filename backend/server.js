@@ -275,9 +275,43 @@ mongoose
   });
 
 // --- Gateway same-origin hacia el motor Prolog ---
+// El motor no debe ser alcanzable directo: su CRUD de catalogo (POST/PUT/DELETE
+// /api/fallas y el bootstrap) no exige nada, asi que cualquiera desde internet
+// podria vaciarlo o sobreescribirlo. Este gateway publica solo lo que el
+// frontend consume (inferencia y lecturas de catalogo); el catalogo se modifica
+// por /api/fallas, que ya sincroniza con el motor y exige rol de administrador.
+const RUTAS_PROLOG_PERMITIDAS = new Map([
+  ['/api/diagnostico', ['POST', 'OPTIONS']],
+  ['/api/sintomas', ['GET', 'OPTIONS']],
+  ['/api/fallas', ['GET', 'OPTIONS']],
+]);
+
+// Se compara la ruta cruda, sin decodificar y sin normalizar, contra la lista:
+// asi `/api/%73intomas`, `/api/sintomas/` o `/api/../api/sintomas` no coinciden
+// y no hay forma de esquivar la lista codificando o subiendo directorios.
+function rutaPrologPermitida(ruta) {
+  if (ruta.includes('%') || ruta.includes('..') || ruta.includes('//')) return null;
+  return RUTAS_PROLOG_PERMITIDAS.get(ruta) || null;
+}
+
+function autorizarGatewayProlog(req, res, next) {
+  const permitidos = rutaPrologPermitida(req.path);
+  if (!permitidos) {
+    return res.status(404).json({ error: 'Ruta no encontrada' });
+  }
+  if (!permitidos.includes(req.method)) {
+    res.setHeader('Allow', permitidos.join(', '));
+    return res.status(405).json({ error: 'Método no permitido' });
+  }
+  // El preflight no lleva credenciales por diseno: exigir sesion aqui romperia
+  // CORS sin cerrar nada, porque el motor solo responde 204 y no ejecuta nada.
+  if (req.method === 'OPTIONS') return next();
+  return requireAuth(req, res, next);
+}
+
 // `req.url` ya viene sin el prefijo de montaje: /api/prolog/api/sintomas ->
 // http://localhost:8000/api/sintomas
-app.use('/api/prolog', async (req, res, next) => {
+app.use('/api/prolog', autorizarGatewayProlog, async (req, res, next) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), PROLOG_TIMEOUT_MS);
   try {
