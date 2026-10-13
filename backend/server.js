@@ -126,6 +126,20 @@ const limitadorLogin = rateLimit({
 
 app.use('/api', limitadorApi);
 
+// DEBUG_IP=1 deja constancia del origen de cada intento de login para calibrar
+// TRUST_PROXY_HOPS una vez (que IP ve Express detras de Vercel/CloudFront/ALB).
+// Registra UNICAMENTE req.ip y la cabecera X-Forwarded-For cruda: nunca el
+// usuario, la contraseña ni ninguna otra cabecera. Se apaga quitando la variable.
+const registroIpDebug =
+  process.env.DEBUG_IP === '1'
+    ? (req, _res, next) => {
+        console.info(
+          `[debug-ip] ip=${req.ip} x-forwarded-for=${req.get('x-forwarded-for') || '(sin cabecera)'}`
+        );
+        next();
+      }
+    : (_req, _res, next) => next();
+
 function sanitizeUri(uri) {
   try {
     if (!uri) return uri;
@@ -888,7 +902,7 @@ function sincronizarFallaConProlog(doc) {
 // --- Sesion ---
 // El 401 es el mismo para usuario inexistente y para contraseña incorrecta a
 // proposito: distinguirlos le diria a quien prueba si ese usuario existe.
-app.post('/api/auth/login', limitadorLogin, async (req, res, next) => {
+app.post('/api/auth/login', registroIpDebug, limitadorLogin, async (req, res, next) => {
   try {
     const { username, password } = req.body || {};
     const usuario = await User.findOne({

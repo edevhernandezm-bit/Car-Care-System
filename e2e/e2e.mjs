@@ -929,6 +929,48 @@ test('09l | API: el limitador corta con 429, el general y el del login', async (
   }
 });
 
+test('09n | API: DEBUG_IP registra el origen del login y nunca la contrasena', async () => {
+  // Ayuda temporal para calibrar TRUST_PROXY_HOPS: apagada por defecto y solo
+  // escribe la IP y X-Forwarded-For. Las aserciones de que ni el usuario ni la
+  // contraseña aparecen son las que impiden que el diagnostico sea una fuga.
+  const puerto = PUERTO_API + 11;
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: {
+      ...process.env,
+      PORT: String(puerto),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      DEBUG_IP: '1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let salida = '';
+  proc.stdout.on('data', (d) => {
+    salida += d.toString();
+  });
+
+  const usuario = 'quien_sea_e2e';
+  const contrasena = 'contrasena-que-no-debe-salir';
+  try {
+    await sondeo(`http://localhost:${puerto}/health`, { timeout: 30000 });
+    const res = await fetch(`http://localhost:${puerto}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '203.0.113.7' },
+      body: JSON.stringify({ username: usuario, password: contrasena }),
+    });
+    assert.equal(res.status, 401, 'un usuario inexistente no entra');
+    await sleep(300); // el pipe entrega la linea un instante despues
+
+    assert.match(salida, /\[debug-ip\] ip=\S+ x-forwarded-for=/, 'debe registrar la IP y la cabecera');
+    assert.ok(salida.includes('203.0.113.7'), 'el X-Forwarded-For crudo debe quedar registrado');
+    assert.ok(!salida.includes(contrasena), 'nunca debe registrar la contrasena');
+    assert.ok(!salida.includes(usuario), 'nunca debe registrar el usuario');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
+});
+
 test('10 | React/Vite: index y sistema experto (asíncrono vía Prolog)', async () => {
   const index = await (await fetch(`${WEB_URL}/`)).text();
   assert.match(index, /<div id="root"><\/div>/);
