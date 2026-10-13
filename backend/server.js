@@ -6,6 +6,7 @@ const MongoStore = require('connect-mongo');
 const bcrypt = require('bcryptjs');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const crypto = require('crypto');
 
 const app = express();
 const PUERTO = process.env.PORT || 5000;
@@ -60,6 +61,19 @@ let cacheTipoCambio = null;
 // N llamadas a Frankfurter (stampede). Con esto, todas comparten una sola.
 let pendienteTipoCambio = null;
 
+// Compara dos secretos sin cortar al primer byte distinto: un `===` deja medir por
+// tiempo cuantos bytes iniciales coinciden. `crypto.timingSafeEqual` exige buffers
+// del mismo tamano y lanza excepcion si no lo son, asi que el tamano se comprueba
+// antes: un valor de otra longitud (o no-string, p. ej. la cabecera ausente) se
+// rechaza sin lanzar.
+function coincideSecreto(recibido, esperado) {
+  if (typeof recibido !== 'string' || typeof esperado !== 'string') return false;
+  const a = Buffer.from(recibido);
+  const b = Buffer.from(esperado);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 // Cabecera que inyecta CloudFront y que nadie mas conoce: quien le pegue al DNS
 // del ALB directo no la trae y se queda fuera. Solo se exige si esta definida,
 // porque en local no hay CloudFront delante. `/health` queda exento a proposito:
@@ -68,7 +82,7 @@ let pendienteTipoCambio = null;
 const ORIGIN_VERIFY = process.env.ORIGIN_VERIFY;
 app.use((req, res, next) => {
   if (!ORIGIN_VERIFY || req.path === '/health') return next();
-  if (req.get('X-Origin-Verify') !== ORIGIN_VERIFY) {
+  if (!coincideSecreto(req.get('X-Origin-Verify'), ORIGIN_VERIFY)) {
     return res.status(403).json({ error: 'Origen no autorizado' });
   }
   // El ALB reescribe X-Forwarded-Proto con el protocolo de SU listener (http), asi

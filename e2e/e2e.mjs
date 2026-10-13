@@ -869,6 +869,13 @@ test('09i | API: la cabecera X-Origin-Verify se exige solo si esta configurada',
     });
     assert.equal(ajena.status, 403, 'un valor distinto debe rechazarse');
 
+    // Misma longitud que el secreto pero distinto contenido: ejercita el camino en
+    // que timingSafeEqual si compara (longitudes iguales) y no el rechazo por tamano.
+    const mismaLongitud = await fetch(`http://localhost:${puerto}/api/config/tipo-cambio`, {
+      headers: { 'X-Origin-Verify': 'x'.repeat(secreto.length) },
+    });
+    assert.equal(mismaLongitud.status, 403, 'un valor de igual longitud tambien debe rechazarse');
+
     // El health check del ALB llega al destino sin pasar por CloudFront. Si el
     // filtro lo alcanzara, el balanceador sacaria la tarea de servicio.
     const salud = await fetch(`http://localhost:${puerto}/health`);
