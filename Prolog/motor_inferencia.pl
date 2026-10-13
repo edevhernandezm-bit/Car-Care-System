@@ -1259,11 +1259,50 @@ inicio :-
 :- set_setting(http:cors, [*]). % Permite recibir peticiones de cualquier página web
 
 % Endpoints (método principal + preflight OPTIONS del navegador)
-:- http_handler(root(api/diagnostico), procesar_api, [methods([options, post]), time_limit(infinite)]).
-:- http_handler(root(api/sintomas), procesar_sintomas, [methods([options, get])]).
-:- http_handler(root(api/fallas), procesar_fallas_dinamicas, [methods([options, get, post, put, delete]), time_limit(infinite)]).
-:- http_handler(root(api/fallas/bootstrap), procesar_bootstrap_fallas, [methods([options, post]), time_limit(infinite)]).
-:- http_handler(root(api/historial), procesar_historial, [methods([options, get])]).   % NUEVO (aditivo)
+:- http_handler(root(api/diagnostico), con_token(procesar_api), [methods([options, post]), time_limit(infinite)]).
+:- http_handler(root(api/sintomas), con_token(procesar_sintomas), [methods([options, get])]).
+:- http_handler(root(api/fallas), con_token(procesar_fallas_dinamicas), [methods([options, get, post, put, delete]), time_limit(infinite)]).
+:- http_handler(root(api/fallas/bootstrap), con_token(procesar_bootstrap_fallas), [methods([options, post]), time_limit(infinite)]).
+:- http_handler(root(api/historial), con_token(procesar_historial), [methods([options, get])]).   % NUEVO (aditivo)
+
+% El motor no comprueba nada por si mismo: cualquiera que alcance su puerto
+% podria vaciar el catalogo (DELETE /api/fallas) o sobreescribirlo (bootstrap).
+% El backend expone solo lo necesario, pero esa es una capa que se puede
+% rodear; esta es la que hay que atravesar. Todas las rutas exigen la cabecera
+% X-Motor-Token con el valor que comparte con la API. El preflight (OPTIONS)
+% queda fuera: el navegador no puede mandar cabeceras propias en un OPTIONS y
+% ese handler solo responde CORS, no toca el catalogo.
+con_token(Handler, Request) :-
+    (   memberchk(method(options), Request)
+    ->  call(Handler, Request)
+    ;   (   token_motor(Esperado),
+            memberchk(x_motor_token(Recibido), Request),
+            token_coincide(Recibido, Esperado)
+        ->  call(Handler, Request)
+        ;   reply_json_dict(_{error: 'No autorizado'}, [status(401)])
+        )
+    ).
+
+% SWI lee el valor de la cabecera como termino Prolog, asi que el token no puede
+% llevar espacios ni comillas: por eso se genera hexadecimal. Sin la variable,
+% se usa el valor de desarrollo, el mismo que el backend usa por defecto; en
+% produccion la definen las task definitions de los dos contenedores.
+token_motor(Token) :-
+    (   catch(getenv('MOTOR_TOKEN', Valor), _, fail),
+        Valor \== ''
+    ->  Token = Valor
+    ;   Token = 'decafbaddecafbad'
+    ).
+
+% La cabecera llega como atomo (y el valor de getenv tambien puede ser string o
+% atomo, segun la version): se normalizan los dos lados antes de comparar. El
+% guardia atomic/1 corta el caso en que el cliente mande algo que SWI no lea como
+% atomo: sin el, atom_string/2 lanzaria un error y el 401 se volveria un 500.
+token_coincide(Recibido, Esperado) :-
+    atomic(Recibido),
+    atom_string(Recibido, R),
+    atomic(Esperado),
+    atom_string(Esperado, R).
 
 cors_reply(Metodos) :-
     maplist(upcase_atom, Metodos, MetodosUp),

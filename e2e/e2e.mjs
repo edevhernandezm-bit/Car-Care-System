@@ -29,6 +29,12 @@ const TEST_DB = 'mongodb://localhost:27017/car_care_e2e';
 const API_URL = `http://localhost:${PUERTO_API}`;
 const WEB_URL = `http://localhost:${PUERTO_WEB}`;
 const PROLOG_URL = `http://localhost:${PUERTO_PROLOG}/api/diagnostico`;
+// El motor exige esta cabecera en todas sus rutas menos el preflight. El valor
+// es distinto del de desarrollo a proposito: si el backend no leyera
+// MOTOR_TOKEN y se quedara con el default, las pruebas fallarian con 401 en vez
+// de pasar, y el fallo seria invisible.
+const MOTOR_TOKEN_E2E = 'e2e0e2e0e2e0e2e0';
+const CH_MOTOR = { 'X-Motor-Token': MOTOR_TOKEN_E2E };
 
 const directorioLogs = mkdtempSync(path.join(tmpdir(), 'car-care-e2e-'));
 
@@ -65,7 +71,7 @@ function matarArbol(pid) {
 async function prologDiagnostico(payload) {
   const res = await fetch(PROLOG_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...CH_MOTOR },
     body: JSON.stringify(payload),
   });
   assert.ok(res.ok, `Prolog responde HTTP ${res.status}`);
@@ -101,13 +107,14 @@ const mongoose = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
 
   prologProc = spawn(SWIPL, ['-q', '-f', PL_FILE, '-g', `server(${PUERTO_PROLOG}), sleep(3600)`, '-t', 'halt'], {
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, MOTOR_TOKEN: MOTOR_TOKEN_E2E },
   });
   prologProc.stdout.pipe(canalLogs('prolog', 'out'));
   prologProc.stderr.pipe(canalLogs('prolog', 'err'));
 
   apiProc = spawn(process.execPath, ['server.js'], {
     cwd: BACKEND_DIR,
-    env: { ...process.env, PORT: String(PUERTO_API), MONGO_URI: TEST_DB },
+    env: { ...process.env, PORT: String(PUERTO_API), MONGO_URI: TEST_DB, MOTOR_TOKEN: MOTOR_TOKEN_E2E },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   apiProc.stdout.pipe(canalLogs('api', 'out'));
@@ -131,11 +138,11 @@ const mongoose = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
   await sondeo(PROLOG_URL, {
     timeout: 90000,
     metodo: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...CH_MOTOR },
     cuerpo: JSON.stringify({ marca: 'gen', modelo: 'gen', anio: 0, sintomas: [] }),
   });
-  await sondeo(`http://localhost:${PUERTO_PROLOG}/api/sintomas`, { timeout: 90000 });
-  await sondeo(`http://localhost:${PUERTO_PROLOG}/api/fallas`, { timeout: 90000 });
+  await sondeo(`http://localhost:${PUERTO_PROLOG}/api/sintomas`, { timeout: 90000, headers: CH_MOTOR });
+  await sondeo(`http://localhost:${PUERTO_PROLOG}/api/fallas`, { timeout: 90000, headers: CH_MOTOR });
   await sondeo(`http://localhost:${PUERTO_PROLOG}/api/diagnostico`, {
     timeout: 90000,
     metodo: 'OPTIONS',
@@ -423,7 +430,7 @@ test('06 | Motor Prolog: casos oráculo vía HTTP', async () => {
 });
 
 test('07 | Prolog: GET /api/sintomas expone el catálogo (única fuente de verdad)', async () => {
-  const res = await fetch(`http://localhost:${PUERTO_PROLOG}/api/sintomas`);
+  const res = await fetch(`http://localhost:${PUERTO_PROLOG}/api/sintomas`, { headers: CH_MOTOR });
   assert.equal(res.status, 200);
   const data = await res.json();
   assert.equal(data.status, 'success');
@@ -440,7 +447,7 @@ test('07 | Prolog: GET /api/sintomas expone el catálogo (única fuente de verda
 });
 
 test('08 | Prolog: GET /api/fallas expone el catálogo (única fuente de verdad)', async () => {
-  const res = await fetch(`http://localhost:${PUERTO_PROLOG}/api/fallas`);
+  const res = await fetch(`http://localhost:${PUERTO_PROLOG}/api/fallas`, { headers: CH_MOTOR });
   assert.equal(res.status, 200);
   const data = await res.json();
   assert.equal(data.status, 'success');
@@ -486,8 +493,9 @@ test('09 | API: allowlist de CORS restringe los orígenes', async () => {
 });
 
 test('09b | Gateway Prolog: el motor sigue respondiendo su propio preflight', async () => {
-  // Aunque el navegador ya no lo consume directo, el motor conserva su handler
-  // OPTIONS: se verifica para que el gateway no dependa de un Prolog degradado.
+  // El preflight es tambien la excepcion del token: el navegador no puede
+  // mandar cabeceras propias en un OPTIONS, y este handler solo responde CORS.
+  // Se verifica para que el gateway no dependa de un Prolog degradado.
   const res = await fetch(`http://localhost:${PUERTO_PROLOG}/api/diagnostico`, {
     method: 'OPTIONS',
     headers: {
@@ -686,6 +694,35 @@ test('09g | Gateway Prolog: las rutas con trucos no coinciden con la lista', asy
     const res = await gateway(ruta, { cookie });
     assert.equal(res.status, 404, `${ruta} debe responder 404`);
   }
+});
+
+test('09h | Motor Prolog: sin token no se lee ni se modifica nada', async () => {
+  // El motor solo comprueba el token, pero es la capa que no se puede rodear:
+  // sin este 401, quien alcance su puerto vacia el catalogo aunque el gateway
+  // de la API publique solo las lecturas.
+  const lectura = await fetch(`http://localhost:${PUERTO_PROLOG}/api/fallas`);
+  assert.equal(lectura.status, 401, 'leer el catálogo sin token debe ser 401');
+  assert.equal((await lectura.json()).error, 'No autorizado');
+
+  const borrado = await fetch(
+    `http://localhost:${PUERTO_PROLOG}/api/fallas?prologId=sistema_frenos_con_aire`,
+    { method: 'DELETE' }
+  );
+  assert.equal(borrado.status, 401, 'borrar sin token debe ser 401');
+
+  const falso = await fetch(`http://localhost:${PUERTO_PROLOG}/api/sintomas`, {
+    headers: { 'X-Motor-Token': '0000000000000000' },
+  });
+  assert.equal(falso.status, 401, 'un token distinto debe ser 401');
+
+  // Y el catálogo sigue ahí: ninguna de esas peticiones llegó a ejecutarse.
+  const conToken = await (
+    await fetch(`http://localhost:${PUERTO_PROLOG}/api/fallas`, { headers: CH_MOTOR })
+  ).json();
+  assert.ok(
+    conToken.fallas.some((f) => f.id === 'sistema_frenos_con_aire'),
+    'el catálogo debe quedar intacto'
+  );
 });
 
 test('10 | React/Vite: index y sistema experto (asíncrono vía Prolog)', async () => {
@@ -1099,7 +1136,7 @@ test('18 | Motor Prolog: la falla creada aparece y la borrada desaparece', async
   // La sincronizacion con el motor es asincrona a proposito (una falla guardada
   // no espera a Prolog), asi que se sondea en vez de exigirlo en la respuesta.
   const enMotor = async (id) => {
-    const cuerpo = await (await fetch(`http://localhost:${PUERTO_PROLOG}/api/fallas`)).json();
+    const cuerpo = await (await fetch(`http://localhost:${PUERTO_PROLOG}/api/fallas`, { headers: CH_MOTOR })).json();
     return (cuerpo.fallas || cuerpo).some((f) => f.id === id || f.prologId === id);
   };
   let presente = false;
@@ -1576,7 +1613,7 @@ test('22 | FASE 7: la falla del administrador entra en la inferencia con sus cau
   }
   assert.equal(sigue, false, 'la falla borrada debe dejar de inferirse');
 
-  const catalogo = await (await fetch(`http://localhost:${PUERTO_PROLOG}/api/sintomas`)).json();
+  const catalogo = await (await fetch(`http://localhost:${PUERTO_PROLOG}/api/sintomas`, { headers: CH_MOTOR })).json();
   const ids = (catalogo.sintomas || catalogo).map((s) => s.id || s.nombre);
   assert.ok(!ids.includes(sintomas[0]), 'el sintoma de la falla borrada no debe quedar en el catalogo');
   assert.ok(ids.includes('sobrecalentamiento'), 'limpiar las dinamicas no debe tocar la base estatica');

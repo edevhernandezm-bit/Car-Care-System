@@ -14,6 +14,13 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/car_care_s
 // de Vite) y en produccion (nginx -> Express -> Prolog), sin CORS ni HTTP mixto.
 const PROLOG_BASE = process.env.PROLOG_BASE || 'http://localhost:8000';
 const PROLOG_TIMEOUT_MS = Number(process.env.PROLOG_TIMEOUT_MS) || 3000;
+// Token que comparte con el motor. El motor rechaza con 401 cualquier peticion
+// que no lo traiga (salvo su preflight), porque su CRUD no exige nada por si
+// mismo: sin esto, quien alcance el puerto del motor vacia el catalogo. Debe ser
+// hexadecimal (SWI lee el valor de la cabecera como termino Prolog) y el mismo
+// en los dos contenedores. El valor por defecto solo cubre el desarrollo local.
+const MOTOR_TOKEN = process.env.MOTOR_TOKEN || 'decafbaddecafbad';
+const CABECERAS_MOTOR = { 'Content-Type': 'application/json', 'X-Motor-Token': MOTOR_TOKEN };
 // Allowlist de origenes. Acepta una lista separada por comas: CORS_ORIGIN=*
 // habilita cualquier origen (util solo en desarrollo).
 const CORS_ORIGENES = (process.env.CORS_ORIGIN || 'http://localhost:5173')
@@ -216,7 +223,7 @@ async function bootstrapFallasDinamicas() {
     // un bootstrap. El lote vacio es el unico modo de limpar.
     const r = await fetch(`${PROLOG_BASE}/api/fallas/bootstrap`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: CABECERAS_MOTOR,
       body: JSON.stringify({ fallas: activas.map(payloadProlog) }),
       // El arranque espera de verdad a que Prolog responda (a diferencia de la
       // sincronizacion por peticion), porque si no el primer diagnostico podria
@@ -317,7 +324,7 @@ app.use('/api/prolog', autorizarGatewayProlog, async (req, res, next) => {
   try {
     const init = {
       method: req.method,
-      headers: { 'Content-Type': req.headers['content-type'] || 'application/json' },
+      headers: { ...CABECERAS_MOTOR, 'Content-Type': req.headers['content-type'] || 'application/json' },
       signal: controller.signal,
     };
     if (req.method !== 'GET' && req.method !== 'HEAD' && req.body !== undefined) {
@@ -787,7 +794,7 @@ function payloadProlog(doc) {
 function sincronizarFallaConProlog(doc) {
   fetch(`${PROLOG_BASE}/api/fallas`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: CABECERAS_MOTOR,
     body: JSON.stringify(payloadProlog(doc)),
     signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS),
   }).catch((err) => {
@@ -1176,6 +1183,7 @@ app.delete('/api/fallas/:id', requireAdmin, async (req, res, next) => {
 
     fetch(`${PROLOG_BASE}/api/fallas?prologId=${encodeURIComponent(falla.prologId)}`, {
       method: 'DELETE',
+      headers: CABECERAS_MOTOR,
       signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS),
     }).catch((err) => {
       console.warn(`[prolog] Falla ${falla.prologId} no retractada: ${err.message}`);
