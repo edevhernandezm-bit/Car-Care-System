@@ -43,8 +43,8 @@ arranca la API contra una base vacia a partir del entorno:
    ```powershell
    Copy-Item backend\.env.example backend\.env
    ```
-2. Edita `backend\.env` y define al menos `SESSION_SECRET` (cualquier frase) y
-   las credenciales del primer administrador:
+2. Edita `backend\.env` y define `SESSION_SECRET` (en produccion es obligatoria:
+   la API no arranca sin ella) y las credenciales del primer administrador:
    - `ADMIN_USERNAME` (p. ej. `admin`)
    - `ADMIN_PASSWORD` (p. ej. `admin123`, cambiala)
    - `ADMIN_NOMBRE` (opcional, por defecto `Administrador`)
@@ -76,6 +76,18 @@ Para detener:
 .\scripts\start-dev.ps1    -Detener
 .\scripts\start-prolog.ps1 -Detener
 ```
+
+### Sonda de salud
+
+`GET /health` responde sin sesion con `200 {"status":"ok","db":"conectado"}` o
+`503 {"status":"degradado","db":"desconectado"}` segun MongoDB, y es la que usa
+el balanceador como health check. El motor expone la suya, tambien publica, en
+`http://localhost:8000/health`.
+
+Es de las pocas rutas abiertas: junto con `GET /api/config/tipo-cambio` y
+`POST /api/auth/logout`, es lo que el navegador necesita antes de entrar. El
+resto de los datos (`/api/diagnosticos`, `/api/stats/certeza` y el gateway de
+Prolog) exige sesion.
 
 ### Comprobar que funciona
 
@@ -115,16 +127,26 @@ npm test
 
 | Variable | Por defecto | Para que sirve |
 |---|---|---|
-| `PORT` | `5000` | Puerto de la API. Vite lo lee para apuntar su proxy, asi que basta con definirla en un solo lado |
+| `PORT` | `5000` | Puerto de la API; el motor tambien la lee (con `8000` por defecto). Vite lo lee para apuntar su proxy, asi que basta con definirla en un solo lado |
 | `MONGO_URI` | `mongodb://localhost:27017/car_care_system` | Conexion a MongoDB |
 | `PROLOG_BASE` | `http://localhost:8000` | Direccion del motor para el gateway |
 | `PROLOG_TIMEOUT_MS` | `3000` | Tiempo maximo de espera del gateway |
 | `CORS_ORIGIN` | `http://localhost:5173` | Origenes permitidos, separados por comas, o `*` |
-| `SESSION_SECRET` | valor de desarrollo | Frase que firma las cookies de sesion; cambiala en produccion |
+| `SESSION_SECRET` | valor de desarrollo | Frase que firma las cookies de sesion. **En produccion es obligatoria**: sin ella la API no arranca |
+| `TRUST_PROXY_HOPS` | `2` | Proxies delante de la API (CloudFront y el ALB). Sin declararlos, `req.ip` seria la IP interna del ALB |
+| `ORIGIN_VERIFY` | — | Cabecera secreta que inyecta CloudFront. Sin definirla no se exige (local); definida, quien no la traiga recibe 403 |
+| `MOTOR_TOKEN` | valor de desarrollo | Token hexadecimal compartido con el motor. Si el motor no lo define, arranca abierto y lo avisa por stderr |
+| `RATE_LIMIT_WINDOW_MS` | `900000` | Ventana del limite de peticiones (15 min) |
+| `RATE_LIMIT_MAX` | `300` | Peticiones por ventana e IP para toda la API |
+| `LOGIN_RATE_LIMIT_MAX` | `20` | Intentos de login fallidos por ventana y por `(IP, usuario)` |
+| `DEBUG_IP` | `0` | Con `1`, registra la IP y `X-Forwarded-For` de cada intento de login, para calibrar `TRUST_PROXY_HOPS` |
 | `ADMIN_USERNAME` | — | Usuario del primer administrador (solo si la base esta vacia) |
 | `ADMIN_PASSWORD` | — | Contraseña del primer administrador (solo si la base esta vacia) |
 | `ADMIN_NOMBRE` | `Administrador` | Nombre visible del primer administrador |
 | `SWIPL` | instalacion estandar | Ruta a `swipl.exe` |
+
+`MOTOR_TOKEN` y `PORT` las leen los dos contenedores: deben valer lo mismo en la
+task definition de la API y en la del motor.
 
 ### Instalacion con Docker (opcional)
 
