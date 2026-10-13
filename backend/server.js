@@ -9,6 +9,13 @@ const app = express();
 const PUERTO = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/car_care_system';
 
+// Proxies delante de la API: CloudFront y el ALB, en ese orden. Sin declararlos
+// Express no se fia de X-Forwarded-Proto/For: `req.ip` seria la IP interna del
+// ALB (y el limitador de peticiones contaria a todos los clientes como uno) y
+// `req.protocol` no veria el https que termina CloudFront.
+const TRUST_PROXY_HOPS = Number(process.env.TRUST_PROXY_HOPS ?? 2);
+app.set('trust proxy', TRUST_PROXY_HOPS);
+
 // Motor de inferencia Prolog. El navegador ya no lo llama directo: todo pasa por
 // este gateway same-origin, de modo que el frontend funciona igual en dev (proxy
 // de Vite) y en produccion (nginx -> Express -> Prolog), sin CORS ni HTTP mixto.
@@ -50,6 +57,18 @@ let cacheTipoCambio = null;
 // Promesa en vuelo. Sin esto, N peticiones simultaneas con la cache fria disparan
 // N llamadas a Frankfurter (stampede). Con esto, todas comparten una sola.
 let pendienteTipoCambio = null;
+
+// Cabecera que inyecta CloudFront y que nadie mas conoce: quien le pegue al DNS
+// del ALB directo no la trae y se queda fuera. Solo se exige si esta definida,
+// porque en local no hay CloudFront delante. `/health` queda exento a proposito:
+// el health check del ALB llega al destino sin pasar por CloudFront, y si se le
+// exigiera la cabecera el balanceador sacaria la tarea de servicio.
+const ORIGIN_VERIFY = process.env.ORIGIN_VERIFY;
+app.use((req, res, next) => {
+  if (!ORIGIN_VERIFY || req.path === '/health') return next();
+  if (req.get('X-Origin-Verify') === ORIGIN_VERIFY) return next();
+  return res.status(403).json({ error: 'Origen no autorizado' });
+});
 
 // `origin` debe compararse contra la allowlist de forma explicita: pasar un
 // string a `cors` hace que lo devuelva siempre, sin comparar con el origen real

@@ -725,6 +725,57 @@ test('09h | Motor Prolog: sin token no se lee ni se modifica nada', async () => 
   );
 });
 
+test('09i | API: la cabecera X-Origin-Verify se exige solo si esta configurada', async () => {
+  // CloudFront es el unico camino legitimo hacia el ALB porque inyecta esta
+  // cabecera; configurarla cierra el acceso directo al DNS del balanceador. Se
+  // prueba en una segunda instancia porque la variable se lee al arrancar (la
+  // API principal de la suite la tiene sin definir, y asi el resto de las
+  // pruebas comprueba que el filtro es inerte en local).
+  const puerto = PUERTO_API + 8;
+  const secreto = 'secreto-de-origen-e2e';
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: {
+      ...process.env,
+      PORT: String(puerto),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      ORIGIN_VERIFY: secreto,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-origen.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-origen.err'), 'w') }));
+
+  try {
+    // La sonda de arranque tambien pasa por el filtro: hay que presentarla.
+    await sondeo(`http://localhost:${puerto}/api/config/tipo-cambio`, {
+      timeout: 30000,
+      headers: { 'X-Origin-Verify': secreto },
+    });
+
+    const sinCabecera = await fetch(`http://localhost:${puerto}/api/config/tipo-cambio`);
+    assert.equal(sinCabecera.status, 403, 'sin la cabecera de CloudFront debe rechazarse');
+
+    const conCabecera = await fetch(`http://localhost:${puerto}/api/config/tipo-cambio`, {
+      headers: { 'X-Origin-Verify': secreto },
+    });
+    assert.equal(conCabecera.status, 200, 'con la cabecera de CloudFront debe pasar');
+
+    const ajena = await fetch(`http://localhost:${puerto}/api/config/tipo-cambio`, {
+      headers: { 'X-Origin-Verify': 'otro-valor' },
+    });
+    assert.equal(ajena.status, 403, 'un valor distinto debe rechazarse');
+
+    // El health check del ALB llega al destino sin pasar por CloudFront. Si el
+    // filtro lo alcanzara, el balanceador sacaria la tarea de servicio.
+    const salud = await fetch(`http://localhost:${puerto}/health`);
+    assert.notEqual(salud.status, 403, '/health debe quedar fuera del filtro');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
+});
+
 test('10 | React/Vite: index y sistema experto (asíncrono vía Prolog)', async () => {
   const index = await (await fetch(`${WEB_URL}/`)).text();
   assert.match(index, /<div id="root"><\/div>/);
