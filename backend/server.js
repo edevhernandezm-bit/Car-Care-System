@@ -68,8 +68,18 @@ let pendienteTipoCambio = null;
 const ORIGIN_VERIFY = process.env.ORIGIN_VERIFY;
 app.use((req, res, next) => {
   if (!ORIGIN_VERIFY || req.path === '/health') return next();
-  if (req.get('X-Origin-Verify') === ORIGIN_VERIFY) return next();
-  return res.status(403).json({ error: 'Origen no autorizado' });
+  if (req.get('X-Origin-Verify') !== ORIGIN_VERIFY) {
+    return res.status(403).json({ error: 'Origen no autorizado' });
+  }
+  // El ALB reescribe X-Forwarded-Proto con el protocolo de SU listener (http), asi
+  // que Express veria `req.secure = false` y express-session, en produccion, no
+  // emitiria la cookie de sesion (la descarta si `cookie.secure` y la peticion no
+  // es https). La cabecera secreta de CloudFront es la prueba de que el tramo
+  // publico fue https, asi que aqui se fija el protocolo: antes de la sesion, que
+  // se instala mas abajo, y de cualquier lectura de `req.secure`. Sin la cabecera
+  // valida no se toca nada (arriba ya se respondio 403).
+  req.headers['x-forwarded-proto'] = 'https';
+  return next();
 });
 
 // Cabeceras de seguridad (X-Content-Type-Options, X-Frame-Options, HSTS...).
@@ -127,14 +137,15 @@ const limitadorLogin = rateLimit({
 app.use('/api', limitadorApi);
 
 // DEBUG_IP=1 deja constancia del origen de cada intento de login para calibrar
-// TRUST_PROXY_HOPS una vez (que IP ve Express detras de Vercel/CloudFront/ALB).
-// Registra UNICAMENTE req.ip y la cabecera X-Forwarded-For cruda: nunca el
-// usuario, la contraseña ni ninguna otra cabecera. Se apaga quitando la variable.
+// TRUST_PROXY_HOPS y el protocolo una vez (que IP y que protocolo ve Express
+// detras de Vercel/CloudFront/ALB). Registra UNICAMENTE req.ip, la cabecera
+// X-Forwarded-For cruda y el protocolo/secure que Express deriva de ella: nunca
+// el usuario, la contraseña ni ninguna otra cabecera. Se apaga quitando la variable.
 const registroIpDebug =
   process.env.DEBUG_IP === '1'
     ? (req, _res, next) => {
         console.info(
-          `[debug-ip] ip=${req.ip} x-forwarded-for=${req.get('x-forwarded-for') || '(sin cabecera)'}`
+          `[debug-ip] ip=${req.ip} x-forwarded-for=${req.get('x-forwarded-for') || '(sin cabecera)'} protocol=${req.protocol} secure=${req.secure}`
         );
         next();
       }

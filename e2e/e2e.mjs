@@ -990,8 +990,70 @@ test('09n | API: DEBUG_IP registra el origen del login y nunca la contrasena', a
 
     assert.match(salida, /\[debug-ip\] ip=\S+ x-forwarded-for=/, 'debe registrar la IP y la cabecera');
     assert.ok(salida.includes('203.0.113.7'), 'el X-Forwarded-For crudo debe quedar registrado');
+    assert.match(
+      salida,
+      /protocol=\S+ secure=\S+/,
+      'debe registrar el protocolo y si la peticion es segura (para calibrar la cookie)'
+    );
     assert.ok(!salida.includes(contrasena), 'nunca debe registrar la contrasena');
     assert.ok(!salida.includes(usuario), 'nunca debe registrar el usuario');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
+});
+
+test('09o | API en produccion: la cabecera de CloudFront fija el protocolo y la cookie sale Secure', async () => {
+  // El ALB reescribe X-Forwarded-Proto con el protocolo de SU listener (http), asi
+  // que sin el filtro de origen Express veria req.secure = false y express-session,
+  // con la cookie en secure por NODE_ENV=production, la descartaria: el login
+  // responderia 200 pero sin sesion. Con la cabecera secreta de CloudFront el
+  // protocolo se fija en https y la cookie se emite. La prueba NO manda
+  // x-forwarded-proto: eso es justo lo que reproduce la nube.
+  const puerto = PUERTO_API + 12;
+  const secreto = 'secreto-de-origen-productivo';
+  const cuenta = { username: 'origen_prod_e2e', password: 'clave-origen-prod' };
+  await usuarioEnMongo({ ...cuenta, role: 'estudiante_mecanica', nombre: 'Origen Prod E2E' });
+
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: {
+      ...process.env,
+      PORT: String(puerto),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      NODE_ENV: 'production',
+      SESSION_SECRET: 'secreto-sesion-e2e',
+      ORIGIN_VERIFY: secreto,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-origen-prod.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-origen-prod.err'), 'w') }));
+
+  const ingreso = (headers) =>
+    fetch(`http://localhost:${puerto}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(cuenta),
+    });
+
+  try {
+    await sondeo(`http://localhost:${puerto}/api/config/tipo-cambio`, {
+      timeout: 30000,
+      headers: { 'X-Origin-Verify': secreto },
+    });
+
+    const sinCabecera = await ingreso({});
+    assert.equal(sinCabecera.status, 403, 'sin la cabecera de CloudFront el login se rechaza');
+
+    const ajena = await ingreso({ 'X-Origin-Verify': 'otro-valor' });
+    assert.equal(ajena.status, 403, 'con una cabecera distinta el login se rechaza');
+
+    const conCabecera = await ingreso({ 'X-Origin-Verify': secreto });
+    assert.equal(conCabecera.status, 200, 'con la cabecera de CloudFront el login entra');
+    const setCookie = conCabecera.headers.get('set-cookie') || '';
+    assert.match(setCookie, /connect\.sid=/, 'en produccion el login debe emitir la cookie de sesion');
+    assert.match(setCookie, /;\s*Secure\b/i, 'la cookie debe llevar Secure sin x-forwarded-proto de entrada');
   } finally {
     if (proc.pid) matarArbol(proc.pid);
   }
