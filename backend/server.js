@@ -4,6 +4,8 @@ const cors = require('cors');
 const session = require('express-session');
 const MongoStore = require('connect-mongo');
 const bcrypt = require('bcryptjs');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PUERTO = process.env.PORT || 5000;
@@ -70,6 +72,11 @@ app.use((req, res, next) => {
   return res.status(403).json({ error: 'Origen no autorizado' });
 });
 
+// Cabeceras de seguridad (X-Content-Type-Options, X-Frame-Options, HSTS...).
+// La API solo devuelve JSON, asi que no hay contenido propio que el CSP pueda
+// romper.
+app.use(helmet());
+
 // `origin` debe compararse contra la allowlist de forma explicita: pasar un
 // string a `cors` hace que lo devuelva siempre, sin comparar con el origen real
 // de la peticion (es decir, no restringe nada).
@@ -84,6 +91,33 @@ app.use(
   })
 );
 app.use(express.json({ limit: '1mb' }));
+
+// Limite de peticiones. El general cubre toda la API: la inferencia de Prolog es
+// costosa y el motor confia en quien le llega. El del login es mas estricto y
+// solo cuenta los intentos fallidos, asi que un usuario legitimo no gasta cupo y
+// lo que se frena es la fuerza bruta. Los valores se pueden subir por entorno.
+const RATE_LIMIT_VENTANA_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000);
+const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX ?? 300);
+const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX ?? 10);
+
+const limitadorApi = rateLimit({
+  windowMs: RATE_LIMIT_VENTANA_MS,
+  limit: RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas peticiones. Intenta mas tarde.' },
+});
+
+const limitadorLogin = rateLimit({
+  windowMs: RATE_LIMIT_VENTANA_MS,
+  limit: LOGIN_RATE_LIMIT_MAX,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos fallidos. Intenta mas tarde.' },
+});
+
+app.use('/api', limitadorApi);
 
 function sanitizeUri(uri) {
   try {
@@ -533,7 +567,7 @@ diagnosticoSchema.index({ 'fallas.falla': 1 });
 
 const Diagnostico = mongoose.model('Diagnostico', diagnosticoSchema);
 
-app.get('/api/diagnosticos', async (_req, res, next) => {
+app.get('/api/diagnosticos', requireAuth, async (_req, res, next) => {
   try {
     const historial = await Diagnostico.find().sort({ creado_en: -1 }).limit(100);
     res.json(historial);
@@ -542,7 +576,7 @@ app.get('/api/diagnosticos', async (_req, res, next) => {
   }
 });
 
-app.post('/api/diagnosticos', async (req, res, next) => {
+app.post('/api/diagnosticos', requireAuth, async (req, res, next) => {
   try {
     const tasa = await resolverTipoCambio();
     const diag = new Diagnostico({
@@ -582,7 +616,7 @@ app.post('/api/diagnosticos', async (req, res, next) => {
 // El global y el promedio por falla pasan por aquí para que la regla sea una.
 const redondearCerteza = (v) => Math.round(v * 100) / 100;
 
-app.get('/api/stats/certeza', async (_req, res, next) => {
+app.get('/api/stats/certeza', requireAuth, async (_req, res, next) => {
   try {
     // total_consultas se cuenta sobre los documentos, no sobre el pipeline
     // desenrollado: una consulta que no infirió ninguna falla sigue siendo una
@@ -847,7 +881,7 @@ function sincronizarFallaConProlog(doc) {
 // --- Sesion ---
 // El 401 es el mismo para usuario inexistente y para contraseña incorrecta a
 // proposito: distinguirlos le diria a quien prueba si ese usuario existe.
-app.post('/api/auth/login', async (req, res, next) => {
+app.post('/api/auth/login', limitadorLogin, async (req, res, next) => {
   try {
     const { username, password } = req.body || {};
     const usuario = await User.findOne({
@@ -1235,6 +1269,14 @@ app.delete('/api/fallas/:id', requireAdmin, async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+// --- 404 ---
+// Sin esto, una ruta desconocida caeria en el manejador de errores y, al no ser
+// un error, express responderia con su HTML por defecto. La API contesta siempre
+// JSON, tambien cuando no encuentra la ruta.
+app.use((_req, res) => {
+  res.status(404).json({ error: 'Ruta no encontrada' });
 });
 
 // --- Manejo central de errores ---

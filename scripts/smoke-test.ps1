@@ -8,10 +8,10 @@
     el puerto del frontend y comprueba que Vite, Express y Prolog se hablan.
 
     No escribe en la base de datos de desarrollo: las escrituras (persistencia
-    e historial) las cubre la suite e2e contra una base desechable. Aqui solo
-    se manda un POST invalido a proposito, para comprobar el 400 a traves del
-    proxy, que no llega a persistir nada. El catalogo, el diagnostico del motor,
-    el historial y el CORS ya los cubre la suite e2e, asi que no se repiten.
+    e historial) las cubre la suite e2e contra una base desechable. Aqui se manda
+    un POST sin sesion a proposito, para comprobar a traves del proxy de Vite que
+    la ruta esta protegida. El catalogo, el diagnostico del motor, el historial y
+    el CORS ya los cubre la suite e2e, asi que no se repiten.
 
     Al terminar apaga lo que levanto, salvo que se pase -Mantener.
 
@@ -103,22 +103,29 @@ try {
     Check 'GET / sirve la pagina' ($indice.Status -eq 200 -and $indice.Raw -match '<div id="root">') "status $($indice.Status)"
 
     Write-Host ''
-    Write-Host '== 4. La API responde y valida =='
+    Write-Host '== 4. La API responde y protege =='
 
     $cambio = Invoke-Api "$Web/api/config/tipo-cambio"
     Check 'el tipo de cambio es positivo' ($cambio.Status -eq 200 -and $cambio.Json.usd_mxn -gt 0) `
         "fuente=$($cambio.Json.fuente) usd_mxn=$($cambio.Json.usd_mxn)"
 
     # Catalogo, POST del motor, historial y CORS los cubre la suite e2e
-    # (pruebas 07/08/09, 06/11, 04 y 09) contra una base desechable. Aqui solo
-    # queda el camino que la e2e no mira: el 400 a traves del proxy de Vite.
-    $invalido = Invoke-Api "$Web/api/diagnosticos" 'POST' @{
+    # (pruebas 07/08/09, 06/11, 04 y 09) contra una base desechable. Aqui queda el
+    # camino que la e2e no mira: la peticion cruzando el proxy de Vite. Desde 1.7
+    # el diagnostico exige sesion, asi que sin cookie lo correcto es un 401; eso
+    # comprueba a la vez que el proxy reenvia y que la ruta esta protegida.
+    $protegido = Invoke-Api "$Web/api/diagnosticos" 'POST' @{
         vehiculo = @{ marca = 'x'; modelo = 'x'; anio = 0 }
         sintomas = @()
         fallas   = @(@{ falla = 'f'; certeza = 99 })
     }
-    Check 'una certeza fuera de rango se rechaza con 400' ($invalido.Status -eq 400) "status $($invalido.Status)"
-    Check 'el 400 no filtra el detalle del schema' ($invalido.Raw -notmatch 'Path "|ValidationError') $invalido.Raw
+    Check 'una ruta de datos sin sesion responde 401 a traves del proxy' ($protegido.Status -eq 401) "status $($protegido.Status)"
+    Check 'el 401 no filtra el detalle del schema' ($protegido.Raw -notmatch 'Path "|ValidationError') $protegido.Raw
+
+    # /health no pasa por el proxy de Vite (solo enruta /api): lo pide el
+    # balanceador contra el puerto de la API.
+    $salud = Invoke-Api "http://localhost:$PuertoApi/health"
+    Check '/health responde 200 sin sesion' ($salud.Status -eq 200 -and $salud.Json.status -eq 'ok') "status $($salud.Status) db=$($salud.Json.db)"
 
     $fuente = Invoke-Api "$Web/src/lib/api.js"
     Check 'el cliente ya no llama directo al motor' ($fuente.Raw -notmatch 'localhost:8000')

@@ -167,6 +167,39 @@ after(async () => {
   rmSync(directorioLogs, { recursive: true, force: true });
 });
 
+// ---------------------------------------------------------------------------
+// Sesion para los endpoints de datos
+// Desde 1.7 /api/diagnosticos y /api/stats/certeza exigen sesion. En vez de
+// repetir el login en cada prueba, se crea una cuenta propia y se inicia sesion
+// una sola vez; la cookie se inyecta en las peticiones que la necesitan.
+// ---------------------------------------------------------------------------
+const CUENTA_API = { username: 'api_e2e', password: 'clave-api-e2e' };
+let cookieApiE2E = null;
+
+async function cookieDeApiE2E() {
+  if (!cookieApiE2E) {
+    await usuarioEnMongo({ ...CUENTA_API, role: 'estudiante_mecanica', nombre: 'API E2E' });
+    const ingreso = await api('/api/auth/login', { method: 'POST', body: CUENTA_API });
+    assert.equal(ingreso.status, 200, 'la cuenta de datos debe poder iniciar sesión');
+    cookieApiE2E = ingreso.cookie;
+  }
+  return cookieApiE2E;
+}
+
+async function fetchApi(ruta, opciones = {}) {
+  return fetch(`${API_URL}${ruta}`, {
+    ...opciones,
+    headers: { ...(opciones.headers || {}), Cookie: await cookieDeApiE2E() },
+  });
+}
+
+async function fetchWebApi(ruta, opciones = {}) {
+  return fetch(`${WEB_URL}${ruta}`, {
+    ...opciones,
+    headers: { ...(opciones.headers || {}), Cookie: await cookieDeApiE2E() },
+  });
+}
+
 test('00 | API stats/certeza: una base vacia no inventa un promedio de 0', async () => {
   // Va primero a proposito: el `before` hace dropDatabase(), asi que esta es la
   // unica ventana en la que la coleccion esta garantizadamente vacia. Con
@@ -174,7 +207,7 @@ test('00 | API stats/certeza: una base vacia no inventa un promedio de 0', async
   // pintaba como "certeza media 0%, nivel Bajo" al lado de un contador de
   // consultas real: una medicion que el sistema nunca hizo. Lo que no se midio
   // es null, y el cliente lo muestra como "Sin dato".
-  const stats = await (await fetch(`${API_URL}/api/stats/certeza`)).json();
+  const stats = await (await fetchApi('/api/stats/certeza')).json();
 
   assert.equal(stats.total_consultas, 0, 'la base arranca vacia');
   assert.equal(stats.total_fallas_inferidas, 0);
@@ -203,7 +236,7 @@ test('02 | API diagnósticos: persiste y el historial lo devuelve con su tasa co
     sintomas: ['ruido_motor'],
     fallas: [{ falla: 'aceite_motor_bajo', certeza: 0.61, nombre: 'Aceite de motor bajo', urgencia: 'media' }],
   };
-  const res = await fetch(`${API_URL}/api/diagnosticos`, {
+  const res = await fetchApi('/api/diagnosticos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -219,7 +252,7 @@ test('02 | API diagnósticos: persiste y el historial lo devuelve con su tasa co
   assert.ok(creado.tipo_cambio.usd_mxn > 0, 'la tasa congelada debe ser positiva');
   assert.ok(creado.tipo_cambio.fuente, 'la tasa congelada debe traer su fuente');
 
-  const historial = await (await fetch(`${API_URL}/api/diagnosticos`)).json();
+  const historial = await (await fetchApi('/api/diagnosticos')).json();
   const guardado = historial.find((d) => d._id === creado._id);
   assert.ok(guardado, 'el diagnóstico guardado debe aparecer en el historial');
   assert.equal(guardado.tipo_cambio.usd_mxn, creado.tipo_cambio.usd_mxn, 'la tasa del historial debe ser la congelada');
@@ -228,7 +261,7 @@ test('02 | API diagnósticos: persiste y el historial lo devuelve con su tasa co
 test('03 | API diagnósticos: validación (400 ante datos inválidos, sin filtrar el error)', async () => {
   // `certeza: 99` viola el schema de Mongoose (Path "fallas.0.certeza" fuera de rango),
   // lo que debe terminar en un 400 del middleware central, no en un 500.
-  const res = await fetch(`${API_URL}/api/diagnosticos`, {
+  const res = await fetchApi('/api/diagnosticos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -254,7 +287,7 @@ test('03b | API diagnósticos: la certeza acepta 0 (lo emite el motor al redonde
   // en (0, 1] ese diagnostico legitimo llegaba al backend y se rechazaba con
   // 400, perdiendose entero. El 0 se acepta; lo que sigue fuera de rango, no.
   const post = (certeza) =>
-    fetch(`${API_URL}/api/diagnosticos`, {
+    fetchApi('/api/diagnosticos', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -291,7 +324,7 @@ test('03b | API diagnósticos: la certeza acepta 0 (lo emite el motor al redonde
 
   // Una certeza ausente no se rellena: se rechaza, para que quede en el log en
   // vez de guardarse como 0 y pasar por una medicion real.
-  const sinCerteza = await fetch(`${API_URL}/api/diagnosticos`, {
+  const sinCerteza = await fetchApi('/api/diagnosticos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -309,7 +342,7 @@ test('04 | API diagnósticos: se guarda y se lista el historial', async () => {
     sintomas: ['chirrido_al_frenar', 'pedal_freno_esponjoso'],
     fallas: [{ falla: 'sistema_frenos_con_aire', certeza: 0.87 }],
   };
-  const res = await fetch(`${API_URL}/api/diagnosticos`, {
+  const res = await fetchApi('/api/diagnosticos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -320,12 +353,12 @@ test('04 | API diagnósticos: se guarda y se lista el historial', async () => {
   assert.equal(creado.fallas[0].falla, 'sistema_frenos_con_aire');
   assert.equal(creado.fallas[0].certeza, 0.87);
 
-  const historial = await (await fetch(`${API_URL}/api/diagnosticos`)).json();
+  const historial = await (await fetchApi('/api/diagnosticos')).json();
   assert.ok(historial.some((d) => d.vehiculo.marca === 'honda' && d.fallas?.some((f) => f.falla === 'sistema_frenos_con_aire')));
 });
 
 test('05 | API stats/certeza: refleja las fallas guardadas', async () => {
-  await fetch(`${API_URL}/api/diagnosticos`, {
+  await fetchApi('/api/diagnosticos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -338,7 +371,7 @@ test('05 | API stats/certeza: refleja las fallas guardadas', async () => {
     }),
   });
 
-  const stats = await (await fetch(`${API_URL}/api/stats/certeza`)).json();
+  const stats = await (await fetchApi('/api/stats/certeza')).json();
   const pastillas = stats.por_falla.find((f) => f.falla === 'pastillas_freno');
   const frenos = stats.por_falla.find((f) => f.falla === 'frenos_sobrecalentados');
   assert.ok(pastillas, 'por_falla debe incluir pastillas_freno');
@@ -366,7 +399,7 @@ test('05 | API stats/certeza: refleja las fallas guardadas', async () => {
   // el cliente guarda el diagnóstico aunque el motor no devuelva fallas
   // (guardarDiagnostico con fallas: []).
   const antes = stats;
-  await fetch(`${API_URL}/api/diagnosticos`, {
+  await fetchApi('/api/diagnosticos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -376,7 +409,7 @@ test('05 | API stats/certeza: refleja las fallas guardadas', async () => {
     }),
   });
 
-  const despues = await (await fetch(`${API_URL}/api/stats/certeza`)).json();
+  const despues = await (await fetchApi('/api/stats/certeza')).json();
   assert.equal(
     despues.total_consultas,
     antes.total_consultas + 1,
@@ -731,6 +764,34 @@ test('09h | Motor Prolog: sin token no se lee ni se modifica nada', async () => 
   assert.equal((await salud.json()).status, 'ok');
 });
 
+test('09k | API: las rutas de datos exigen sesion, las publicas siguen abiertas', async () => {
+  // 1.7 movio el historial y las estadisticas detras de requireAuth: sin sesion
+  // no hay que inspeccionar la base ni gastar la agregacion de stats.
+  for (const [ruta, opciones] of [
+    ['/api/diagnosticos', {}],
+    ['/api/diagnosticos', { method: 'POST', body: {} }],
+    ['/api/stats/certeza', {}],
+  ]) {
+    const res = await api(ruta, opciones);
+    assert.equal(res.status, 401, `${ruta} sin sesion debe responder 401`);
+  }
+
+  // Lo que el navegador necesita antes de entrar (y el orquestador) sigue abierto.
+  for (const ruta of ['/health', '/api/config/tipo-cambio']) {
+    const res = await api(ruta);
+    assert.ok(res.status < 400, `${ruta} debe seguir siendo publica, vino ${res.status}`);
+  }
+
+  // Una ruta inexistente responde JSON, no el HTML por defecto de Express.
+  const inexistente = await api('/api/no-existe');
+  assert.equal(inexistente.status, 404);
+  assert.equal(inexistente.body?.error, 'Ruta no encontrada');
+
+  // helmet deja sus cabeceras en cualquier respuesta, tambien en las publicas.
+  const res = await fetch(`${API_URL}/health`);
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+});
+
 test('09j | API: /health responde sin sesion y refleja la base', async () => {
   // Es la sonda del ALB: publica (llega antes que la sesion) y barata.
   const res = await fetch(`${API_URL}/health`);
@@ -786,6 +847,70 @@ test('09i | API: la cabecera X-Origin-Verify se exige solo si esta configurada',
     // filtro lo alcanzara, el balanceador sacaria la tarea de servicio.
     const salud = await fetch(`http://localhost:${puerto}/health`);
     assert.equal(salud.status, 200, '/health debe quedar fuera del filtro');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
+});
+
+test('09l | API: el limitador corta con 429, el general y el del login', async () => {
+  // Se prueba en instancias propias con un cupo diminuto: agotar el de la API
+  // principal, que comparte IP con toda la suite, haria fallar al resto por un
+  // motivo ajeno a lo que cada prueba mide.
+  const arrancarApi = async (puerto, extra) => {
+    const proc = spawn(process.execPath, ['server.js'], {
+      cwd: BACKEND_DIR,
+      env: {
+        ...process.env,
+        PORT: String(puerto),
+        MONGO_URI: TEST_DB,
+        MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+        ...extra,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const log = (sufijo) => createWriteStream(null, { fd: openSync(logPath(`api-limite-${puerto}.${sufijo}`), 'w') });
+    proc.stdout.pipe(log('out'));
+    proc.stderr.pipe(log('err'));
+    // /health vive fuera de /api, asi que sondear el arranque no gasta cupo.
+    await sondeo(`http://localhost:${puerto}/health`, { timeout: 30000 });
+    return proc;
+  };
+
+  // Cupo general: dos peticiones pasan y la tercera se corta.
+  let proc = await arrancarApi(PUERTO_API + 9, { RATE_LIMIT_MAX: '2' });
+  try {
+    const ruta = `http://localhost:${PUERTO_API + 9}/api/config/tipo-cambio`;
+    for (let i = 1; i <= 2; i += 1) {
+      assert.equal((await fetch(ruta)).status, 200, `la peticion ${i} deberia pasar`);
+    }
+    const tercera = await fetch(ruta);
+    assert.equal(tercera.status, 429, 'pasado el cupo la API debe responder 429');
+    assert.ok(tercera.headers.get('ratelimit-limit'), 'la respuesta debe anunciar el cupo');
+    assert.equal((await tercera.json()).error, 'Demasiadas peticiones. Intenta mas tarde.');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
+
+  // Cupo del login: cuenta solo los intentos fallidos, asi que un ingreso
+  // correcto no gasta cupo y lo que se frena es la fuerza bruta.
+  const cuenta = { username: 'limite_e2e', password: 'clave-limite-e2e' };
+  await usuarioEnMongo({ ...cuenta, role: 'estudiante_mecanica', nombre: 'Limite E2E' });
+  proc = await arrancarApi(PUERTO_API + 10, { LOGIN_RATE_LIMIT_MAX: '2' });
+  try {
+    const ingreso = `http://localhost:${PUERTO_API + 10}/api/auth/login`;
+    const intento = (clave) =>
+      fetch(ingreso, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: cuenta.username, password: clave }),
+      });
+
+    assert.equal((await intento(cuenta.password)).status, 200, 'un ingreso correcto no gasta cupo');
+    assert.equal((await intento('mala')).status, 401, 'el primer fallo cuenta');
+    assert.equal((await intento('mala')).status, 401, 'el segundo fallo cuenta');
+    const cuarto = await intento('mala');
+    assert.equal(cuarto.status, 429, 'pasado el cupo de fallos el login se corta');
+    assert.equal((await cuarto.json()).error, 'Demasiados intentos fallidos. Intenta mas tarde.');
   } finally {
     if (proc.pid) matarArbol(proc.pid);
   }
@@ -875,7 +1000,7 @@ test('11 | Flujo integrado: React(proxy) → backend → Mongo → stats', async
   assert.ok(motor.fallas.length >= 1, 'El motor real debe detectar fallas');
   const infere = motor.fallas[0];
 
-  const resProxy = await fetch(`${WEB_URL}/api/diagnosticos`, {
+  const resProxy = await fetchWebApi('/api/diagnosticos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -886,10 +1011,10 @@ test('11 | Flujo integrado: React(proxy) → backend → Mongo → stats', async
   });
   assert.equal(resProxy.status, 201, 'El proxy de Vite debe reenviar a la API');
 
-  const stats = await (await fetch(`${WEB_URL}/api/stats/certeza`)).json();
+  const stats = await (await fetchWebApi('/api/stats/certeza')).json();
   assert.ok(stats.por_falla.some((f) => f.falla === infere.id), `stats deben incluir ${infere.id}`);
 
-  const historial = await (await fetch(`${WEB_URL}/api/diagnosticos`)).json();
+  const historial = await (await fetchWebApi('/api/diagnosticos')).json();
   assert.ok(historial.some((d) => d.vehiculo.marca === 'honda' && d.fallas?.some((f) => f.falla === infere.id)));
 });
 
