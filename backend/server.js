@@ -98,7 +98,7 @@ app.use(express.json({ limit: '1mb' }));
 // lo que se frena es la fuerza bruta. Los valores se pueden subir por entorno.
 const RATE_LIMIT_VENTANA_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000);
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX ?? 300);
-const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX ?? 10);
+const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX ?? 20);
 
 const limitadorApi = rateLimit({
   windowMs: RATE_LIMIT_VENTANA_MS,
@@ -114,6 +114,13 @@ const limitadorLogin = rateLimit({
   skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
+  // La clave suma origen y usuario normalizado: el cupo de una cuenta es el par
+  // (IP, usuario). Asi un atacante desde su red solo agota su propio cupo y no
+  // puede dejar fuera a la victima que entra desde otra. `ipKeyGenerator`
+  // normaliza el IPv6 a su subred; sin el, rotar direcciones dentro de un /64
+  // esquivaria el limite.
+  keyGenerator: (req) =>
+    `${rateLimit.ipKeyGenerator(req.ip)}|${String(req.body?.username ?? '').trim().toLowerCase()}`,
   message: { error: 'Demasiados intentos fallidos. Intenta mas tarde.' },
 });
 

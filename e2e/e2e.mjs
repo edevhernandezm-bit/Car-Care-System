@@ -891,26 +891,39 @@ test('09l | API: el limitador corta con 429, el general y el del login', async (
     if (proc.pid) matarArbol(proc.pid);
   }
 
-  // Cupo del login: cuenta solo los intentos fallidos, asi que un ingreso
-  // correcto no gasta cupo y lo que se frena es la fuerza bruta.
+  // Cupo del login: cuenta solo los intentos fallidos y su clave es (IP, usuario).
+  // Se comprueba ademas que agotar el cupo de una cuenta no bloquea a otra que
+  // entra desde la misma red.
   const cuenta = { username: 'limite_e2e', password: 'clave-limite-e2e' };
+  const otra = { username: 'limite_otro_e2e', password: 'clave-limite-otro' };
   await usuarioEnMongo({ ...cuenta, role: 'estudiante_mecanica', nombre: 'Limite E2E' });
+  await usuarioEnMongo({ ...otra, role: 'estudiante_mecanica', nombre: 'Limite Otro E2E' });
   proc = await arrancarApi(PUERTO_API + 10, { LOGIN_RATE_LIMIT_MAX: '2' });
   try {
     const ingreso = `http://localhost:${PUERTO_API + 10}/api/auth/login`;
-    const intento = (clave) =>
+    const intento = (usuario, clave) =>
       fetch(ingreso, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: cuenta.username, password: clave }),
+        body: JSON.stringify({ username: usuario, password: clave }),
       });
 
-    assert.equal((await intento(cuenta.password)).status, 200, 'un ingreso correcto no gasta cupo');
-    assert.equal((await intento('mala')).status, 401, 'el primer fallo cuenta');
-    assert.equal((await intento('mala')).status, 401, 'el segundo fallo cuenta');
-    const cuarto = await intento('mala');
+    assert.equal(
+      (await intento(cuenta.username, cuenta.password)).status,
+      200,
+      'un ingreso correcto no gasta cupo'
+    );
+    assert.equal((await intento(cuenta.username, 'mala')).status, 401, 'el primer fallo cuenta');
+    assert.equal((await intento(cuenta.username, 'mala')).status, 401, 'el segundo fallo cuenta');
+    const cuarto = await intento(cuenta.username, 'mala');
     assert.equal(cuarto.status, 429, 'pasado el cupo de fallos el login se corta');
     assert.equal((await cuarto.json()).error, 'Demasiados intentos fallidos. Intenta mas tarde.');
+
+    assert.equal(
+      (await intento(otra.username, 'mala')).status,
+      401,
+      'agotar el cupo de una cuenta no debe bloquear a otra'
+    );
   } finally {
     if (proc.pid) matarArbol(proc.pid);
   }
