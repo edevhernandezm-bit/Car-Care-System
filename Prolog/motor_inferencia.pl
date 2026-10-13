@@ -1265,6 +1265,13 @@ inicio :-
 :- http_handler(root(api/fallas/bootstrap), con_token(procesar_bootstrap_fallas), [methods([options, post]), time_limit(infinite)]).
 :- http_handler(root(api/historial), con_token(procesar_historial), [methods([options, get])]).   % NUEVO (aditivo)
 
+% Sonda de salud. No lleva con_token a proposito: la pide el orquestador, que no
+% conoce el token, y no toca la base de conocimiento, asi que no puede colgarse.
+:- http_handler(root(health), procesar_health, [methods([get])]).
+
+procesar_health(_Request) :-
+    reply_json_dict(_{status: "ok"}).
+
 % El motor no comprueba nada por si mismo: cualquiera que alcance su puerto
 % podria vaciar el catalogo (DELETE /api/fallas) o sobreescribirlo (bootstrap).
 % El backend expone solo lo necesario, pero esa es una capa que se puede

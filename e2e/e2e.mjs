@@ -723,6 +723,21 @@ test('09h | Motor Prolog: sin token no se lee ni se modifica nada', async () => 
     conToken.fallas.some((f) => f.id === 'sistema_frenos_con_aire'),
     'el catálogo debe quedar intacto'
   );
+
+  // La sonda de salud la pide el orquestador sin credenciales: tiene que
+  // responder sin token y sin tocar la base de conocimiento.
+  const salud = await fetch(`http://localhost:${PUERTO_PROLOG}/health`);
+  assert.equal(salud.status, 200, '/health del motor debe ser publico');
+  assert.equal((await salud.json()).status, 'ok');
+});
+
+test('09j | API: /health responde sin sesion y refleja la base', async () => {
+  // Es la sonda del ALB: publica (llega antes que la sesion) y barata.
+  const res = await fetch(`${API_URL}/health`);
+  assert.equal(res.status, 200, '/health debe ser publico');
+  const cuerpo = await res.json();
+  assert.equal(cuerpo.status, 'ok');
+  assert.equal(cuerpo.db, 'conectado', 'la sonda debe ver la base conectada');
 });
 
 test('09i | API: la cabecera X-Origin-Verify se exige solo si esta configurada', async () => {
@@ -770,7 +785,7 @@ test('09i | API: la cabecera X-Origin-Verify se exige solo si esta configurada',
     // El health check del ALB llega al destino sin pasar por CloudFront. Si el
     // filtro lo alcanzara, el balanceador sacaria la tarea de servicio.
     const salud = await fetch(`http://localhost:${puerto}/health`);
-    assert.notEqual(salud.status, 403, '/health debe quedar fuera del filtro');
+    assert.equal(salud.status, 200, '/health debe quedar fuera del filtro');
   } finally {
     if (proc.pid) matarArbol(proc.pid);
   }

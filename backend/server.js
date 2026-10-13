@@ -371,6 +371,20 @@ app.use('/api/prolog', autorizarGatewayProlog, async (req, res, next) => {
   }
 });
 
+// --- Salud ---
+// Sonda del balanceador. Es barata (solo mira el estado en memoria de la
+// conexion, no consulta la base) y publica: el health check del ALB la pide sin
+// credenciales y tiene que llegar antes que la sesion. Si Mongo no esta
+// conectado la tarea no puede atender nada util (sesiones y datos viven ahi),
+// asi que se marca 503 para que el balanceador no le mande trafico.
+app.get('/health', (_req, res) => {
+  const conectado = mongoose.connection.readyState === 1;
+  res.status(conectado ? 200 : 503).json({
+    status: conectado ? 'ok' : 'degradado',
+    db: conectado ? 'conectado' : 'desconectado',
+  });
+});
+
 // --- Tasa de cambio ---
 // Un único documento con clave 'tipo_cambio_usd_mxn' guarda la última tasa
 // conocida. Es el respaldo cuando la API pública no responde.
