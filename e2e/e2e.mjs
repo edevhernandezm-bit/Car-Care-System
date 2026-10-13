@@ -764,6 +764,32 @@ test('09h | Motor Prolog: sin token no se lee ni se modifica nada', async () => 
   assert.equal((await salud.json()).status, 'ok');
 });
 
+test('09m | Motor Prolog: sin MOTOR_TOKEN arranca abierto y lo avisa', async () => {
+  // El despliegue por etapas puede levantar el motor nuevo antes de que exista
+  // la variable; sin token el motor no exige nada, y lo deja dicho por stderr.
+  // Es el unico estado en el que esto pasa, y el motivo de que el aviso exista:
+  // si falta la variable en produccion, la proteccion esta apagada.
+  const puerto = PUERTO_PROLOG + 11;
+  const proc = spawn(SWIPL, ['-q', '-f', PL_FILE, '-g', `server(${puerto}), sleep(3600)`, '-t', 'halt'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, MOTOR_TOKEN: '' },
+  });
+  let errores = '';
+  proc.stderr.on('data', (d) => {
+    errores += d.toString();
+  });
+
+  try {
+    await sondeo(`http://localhost:${puerto}/health`, { timeout: 60000 });
+    const res = await fetch(`http://localhost:${puerto}/api/sintomas`);
+    assert.equal(res.status, 200, 'sin token configurado el motor no debe exigir token');
+    assert.ok(Array.isArray((await res.json()).sintomas), 'y debe seguir sirviendo el catalogo');
+    assert.match(errores, /MOTOR_TOKEN no esta definido/, 'el arranque debe avisar de que esta abierto');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
+});
+
 test('09k | API: las rutas de datos exigen sesion, las publicas siguen abiertas', async () => {
   // 1.7 movio el historial y las estadisticas detras de requireAuth: sin sesion
   // no hay que inspeccionar la base ni gastar la agregacion de stats.

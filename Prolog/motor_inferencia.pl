@@ -1279,27 +1279,32 @@ procesar_health(_Request) :-
 % X-Motor-Token con el valor que comparte con la API. El preflight (OPTIONS)
 % queda fuera: el navegador no puede mandar cabeceras propias en un OPTIONS y
 % ese handler solo responde CORS, no toca el catalogo.
+%
+% Sin MOTOR_TOKEN definido el motor queda ABIERTO (acepta sin token) y lo avisa
+% por stderr al arrancar. Es el estado que necesita un despliegue por etapas: se
+% puede levantar el motor nuevo antes de que exista la variable, sin que la API
+% vieja (que aun no manda token) reciba 401. No es un modo para produccion.
 con_token(Handler, Request) :-
     (   memberchk(method(options), Request)
     ->  call(Handler, Request)
-    ;   (   token_motor(Esperado),
-            memberchk(x_motor_token(Recibido), Request),
+    ;   token_motor(Esperado)
+    ->  (   memberchk(x_motor_token(Recibido), Request),
             token_coincide(Recibido, Esperado)
         ->  call(Handler, Request)
         ;   reply_json_dict(_{error: 'No autorizado'}, [status(401)])
         )
+    ;   call(Handler, Request)
     ).
 
 % SWI lee el valor de la cabecera como termino Prolog, asi que el token no puede
-% llevar espacios ni comillas: por eso se genera hexadecimal. Sin la variable,
-% se usa el valor de desarrollo, el mismo que el backend usa por defecto; en
-% produccion la definen las task definitions de los dos contenedores.
+% llevar espacios ni comillas: por eso se genera hexadecimal. Sin la variable
+% esta clausula falla y con_token/2 deja pasar: el aviso de arranque es lo que
+% hace visible que la proteccion esta apagada. En produccion la define la task
+% definition, con el mismo valor en los dos contenedores.
 token_motor(Token) :-
-    (   catch(getenv('MOTOR_TOKEN', Valor), _, fail),
-        Valor \== ''
-    ->  Token = Valor
-    ;   Token = 'decafbaddecafbad'
-    ).
+    catch(getenv('MOTOR_TOKEN', Valor), _, fail),
+    Valor \== '',
+    Token = Valor.
 
 % La cabecera llega como atomo (y el valor de getenv tambien puede ser string o
 % atomo, segun la version): se normalizan los dos lados antes de comparar. El
@@ -1368,6 +1373,11 @@ server(Puerto) :-
     ;   true
     ),
     catch(validar_kb(N), E, ( format('[!] No se pudo validar la KB: ~w~n', [E]), N = -1 )),
+    (   token_motor(_)
+    ->  true
+    ;   format(user_error, '[!] MOTOR_TOKEN no esta definido: el motor acepta~n', []),
+        format(user_error, '[!] peticiones SIN token. Definelo en produccion.~n~n', [])
+    ),
     http_server(http_dispatch, [port(Puerto)]),
     format('~n[+] Servidor Prolog corriendo exitosamente en http://localhost:~w/~n', [Puerto]),
     (   N =:= 0
