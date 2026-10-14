@@ -139,9 +139,10 @@ function difundirAReplicas(ruta, init) {
     fetch(`${base}${ruta}`, { ...init, signal: controller.signal })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        // Responde: se levanta el cooldown, pero NO se limpia desactualizada (le
-        // siguen faltando las mutaciones anteriores; eso lo resuelve la recarga).
-        estadoReplicas.get(base).fallandoHasta = 0;
+        // Respondio: se levanta el cooldown. Si ademas venia desactualizada, esto
+        // dispara la recarga del catalogo COMPLETO (marcarReplicaViva), porque este
+        // POST solo aplico el ultimo cambio y le siguen faltando los anteriores.
+        marcarReplicaViva(base);
       })
       .catch((err) => {
         estadoReplicas.get(base).desactualizada = true;

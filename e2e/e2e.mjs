@@ -2303,3 +2303,117 @@ test('31 | 2.5 | DESACTIVAR_LIMITES apaga los límites solo en local, nunca en p
     if (proc.pid) matarArbol(proc.pid);
   }
 });
+
+// ---------------------------------------------------------------------------
+// 2.3 Recuperación: una réplica que arrancó tarde se recarga entera al aparecer
+// ---------------------------------------------------------------------------
+
+test('32 | Catálogo multi-réplica: una réplica que arranca tarde se recarga entero al aparecer', async () => {
+  // La API arranca ANTES que la segunda réplica, así que su bootstrap no la
+  // alcanza y queda marcada desactualizada. Es justo el caso de una réplica que
+  // se cae, recibe cambios mientras tanto y vuelve: al responder, debe recargar
+  // el catálogo COMPLETO (no solo el último cambio difundido).
+  const puertoMotor3 = PUERTO_PROLOG + 2;
+  const puertoApi3 = PUERTO_API + 15;
+
+  const api3 = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: {
+      ...process.env,
+      PORT: String(puertoApi3),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      PROLOG_BASES: `http://localhost:${PUERTO_PROLOG},http://localhost:${puertoMotor3}`,
+      PROLOG_REPLICA_COOLDOWN_MS: '2000',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  api3.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-recarga.out'), 'w') }));
+  api3.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-recarga.err'), 'w') }));
+
+  let motor3 = null;
+  const infiere = async (puertoMotor, id, sintoma) => {
+    const res = await fetch(`http://localhost:${puertoMotor}/api/diagnostico`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...CH_MOTOR },
+      body: JSON.stringify({ marca: 'gen', modelo: 'gen', anio: 0, sintomas: [sintoma] }),
+    });
+    const data = await res.json();
+    return (data.fallas || []).some((f) => f.id === id);
+  };
+  const esperar = async (puertoMotor, id, sintoma, presente) => {
+    for (let i = 0; i < 24; i++) {
+      if ((await infiere(puertoMotor, id, sintoma)) === presente) return true;
+      await sleep(250);
+    }
+    return false;
+  };
+
+  try {
+    await sondeo(`http://localhost:${puertoApi3}/api/config/tipo-cambio`, { timeout: 60000 });
+    const base3 = `http://localhost:${puertoApi3}`;
+    const cookie = await sesionGateway();
+
+    const crear = (nombre, sintoma) =>
+      peticionGateway(base3, '/api/fallas', {
+        method: 'POST',
+        cookie,
+        body: {
+          nombre,
+          sintomas: [sintoma],
+          vehiculo: { marca: 'gen', modelo: 'gen', transmision: 'desconocida' },
+          causas: ['causa de recarga'],
+          procedimiento: ['paso de recarga'],
+          precioMin: 100,
+          precioMax: 200,
+          urgencia: 'media',
+          confianzaDato: 'media',
+        },
+      });
+
+    // Falla A: se crea con la segunda réplica AÚN caída. La difusión no la alcanza
+    // (solo llega a la réplica 1) y deja a la 2 marcada desactualizada.
+    const resA = await crear('Recarga A', 'recarga_sintoma_a_e2e');
+    assert.equal(resA.status, 201, 'la API debe crear A con una réplica caída');
+    const docA = await resA.json();
+
+    // Ahora sí arranca la segunda réplica: motor recién levantado, sin las fallas
+    // dinámicas de Mongo.
+    motor3 = spawn(
+      SWIPL,
+      ['-q', '-f', PL_FILE, '-g', `server(${puertoMotor3}), sleep(3600)`, '-t', 'halt'],
+      { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, MOTOR_TOKEN: MOTOR_TOKEN_E2E } }
+    );
+    motor3.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('prolog3.out'), 'w') }));
+    motor3.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('prolog3.err'), 'w') }));
+    await sondeo(`http://localhost:${puertoMotor3}/api/sintomas`, { timeout: 60000, headers: CH_MOTOR });
+    assert.equal(
+      await infiere(puertoMotor3, 'recarga_a', 'recarga_sintoma_a_e2e'),
+      false,
+      'la réplica recién arrancada todavía no conoce la falla A'
+    );
+
+    // Falla B: su difusión SÍ alcanza a la segunda réplica y, al responder, ésta
+    // dispara la recarga del catálogo completo (A incluida, que nunca se le pudo
+    // difundir).
+    const resB = await crear('Recarga B', 'recarga_sintoma_b_e2e');
+    assert.equal(resB.status, 201, 'la API debe crear B');
+    const docB = await resB.json();
+
+    assert.ok(
+      await esperar(puertoMotor3, 'recarga_a', 'recarga_sintoma_a_e2e', true),
+      'la recarga debe traer la falla A (anterior a la recuperación)'
+    );
+    assert.ok(
+      await esperar(puertoMotor3, 'recarga_b', 'recarga_sintoma_b_e2e', true),
+      'la recarga debe traer la falla B (la que disparó la recuperación)'
+    );
+
+    // Limpieza: se borran de Mongo y la baja se difunde a las réplicas.
+    await peticionGateway(base3, `/api/fallas/${docA._id}`, { method: 'DELETE', cookie });
+    await peticionGateway(base3, `/api/fallas/${docB._id}`, { method: 'DELETE', cookie });
+  } finally {
+    if (api3.pid) matarArbol(api3.pid);
+    if (motor3 && motor3.pid) matarArbol(motor3.pid);
+  }
+});
