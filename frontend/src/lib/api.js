@@ -101,10 +101,11 @@ export async function obtenerStatsCerteza(signal) {
 // valor inventado para una certeza ausente (un 0 de relleno se presentaria como
 // una medicion real y envenenaria los promedios de /api/stats/certeza): si el
 // motor no la mando, que el schema lo rechaze con 400 y quede en el log.
-export function cuerpoDiagnostico({ vehiculo, sintomas, fallas }) {
+export function cuerpoDiagnostico({ vehiculo, sintomas, fallas, observaciones }) {
   return {
     vehiculo,
     sintomas,
+    observaciones: (observaciones || '').trim(),
     fallas: fallas.map((f) => ({
       falla: f.id,
       certeza: f.certeza,
@@ -134,4 +135,13 @@ export function guardarDiagnostico(diagnostico) {
   })
     .then((res) => (res.ok ? res.json() : null))
     .catch(() => null);
+}
+
+// Historial de diagnosticos emitidos, del mas reciente al mas viejo. El backend
+// ya lo devuelve ordenado y acotado (ultimos 100): la vista no reordena ni
+// recorta, solo pinta. Cada documento trae sus observaciones congeladas.
+export async function obtenerHistorial(signal) {
+  const res = await fetch(API_DIAGNOSTICOS, { signal });
+  if (!res.ok) throw new Error('No se pudo consultar el historial');
+  return res.json();
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import BaseConocimiento from './components/BaseConocimiento.jsx';
 import EstadisticasCerteza from './components/EstadisticasCerteza.jsx';
+import Historial from './components/Historial.jsx';
 import MotorBanner from './components/MotorBanner.jsx';
 import Paso1Vehiculo from './components/Paso1Vehiculo.jsx';
 
@@ -14,7 +15,7 @@ import { useAuth } from './context/AuthContext.jsx';
 import Paso2Sintomas from './components/Paso2Sintomas.jsx';
 import Resultados from './components/Resultados.jsx';
 import { useCatalogosIngeniero } from './hooks/useCatalogosIngeniero.js';
-import { diagnosticar, guardarDiagnostico } from './lib/api.js';
+import { diagnosticar, guardarDiagnostico, obtenerTipoCambio } from './lib/api.js';
 import { mapearProlog } from './lib/diagnostico.js';
 
 // El menu, el encabezado de la pagina y el cuerpo se leen de la misma lista. Con
@@ -39,6 +40,12 @@ const SECCIONES = [
     etiqueta: 'Estadísticas',
     titulo: 'Estadísticas',
     subtitulo: 'Qué tan certeza ha dado el sistema en los diagnósticos emitidos.',
+  },
+  {
+    id: 'historial',
+    etiqueta: 'Historial',
+    titulo: 'Historial',
+    subtitulo: 'Consultas guardadas, con el vehículo, las fallas y tus observaciones.',
   },
   // Las tres de administracion viven en la misma lista y no en un segundo
   // bloque junto al menu: al escribirlas aparte, `seccion` no las encontraba y
@@ -204,28 +211,43 @@ export default function App() {
     setResultados({ cargando: true, vehiculo, sintomas });
 
     try {
-      const inferidas = await diagnosticar(vehiculo, sintomas);
+      // El diagnostico ya no se guarda solo: el usuario escribe sus
+      // observaciones y confirma. La tasa se pide aqui solo para pintar el costo
+      // en pesos mientras tanto; al guardar, el documento trae su tasa congelada
+      // (la que queda archivada en el historial). Si la tasa no responde, el
+      // diagnostico se muestra igual, sin equivalencia.
+      const [inferidas, tipoCambio] = await Promise.all([
+        diagnosticar(vehiculo, sintomas),
+        obtenerTipoCambio().catch(() => null),
+      ]);
       if (peticion !== peticionRef.current) return;
       const fallas = inferidas.map((f) => mapearProlog(f, catalogos.fallas));
-      setResultados({ fallas, vehiculo, sintomas });
-
-      // Las fallas van tal cual, sin re-mapear: la forma de vista usa `id` y la
-      // de persistencia usa `falla`, y esa conversion es de guardarDiagnostico.
-      // Mapearlas aqui tambien dejaba el `id` sin existencia al llegar al
-      // serializador, y el backend rechazaba el documento entero.
-      guardarDiagnostico({ vehiculo, sintomas, fallas })
-        .then((docGuardado) => {
-          if (peticion !== peticionRef.current) return;
-          setResultados((prev) => ({
-            ...prev,
-            guardado: docGuardado || null,
-            tipo_cambio: docGuardado?.tipo_cambio || null,
-          }));
-        });
+      setResultados({ fallas, vehiculo, sintomas, tipo_cambio: tipoCambio });
     } catch (err) {
       if (peticion !== peticionRef.current) return;
       setResultados({ error: err.message, vehiculo, sintomas });
     }
+  };
+
+  // Guardado explicito, disparado por "Guardar diagnostico". Devuelve true si el
+  // documento quedo en el historial, para que la vista marque el boton y no lo
+  // deje reenviar. Las fallas van tal cual salen de mapearProlog (forma de vista
+  // con `id`): el renombrado a `falla` es de cuerpoDiagnostico, no de aqui.
+  const guardarResultado = async (observaciones) => {
+    if (!resultados || resultados.guardado) return true;
+    const doc = await guardarDiagnostico({
+      vehiculo: resultados.vehiculo,
+      sintomas: resultados.sintomas,
+      fallas: resultados.fallas || [],
+      observaciones,
+    });
+    if (!doc) return false;
+    setResultados((prev) => ({
+      ...prev,
+      guardado: doc,
+      tipo_cambio: doc.tipo_cambio || prev.tipo_cambio,
+    }));
+    return true;
   };
 
   const volverAlCuestionario = () => {
@@ -258,6 +280,7 @@ export default function App() {
       resultados={resultados}
       onVolver={volverAlCuestionario}
       onCambiarVehiculo={cambiarVehiculo}
+      onGuardar={guardarResultado}
     />
   ) : (
     <Paso2Sintomas
@@ -385,6 +408,7 @@ export default function App() {
                 onLimpiarBusqueda={() => setSearchQuery('')}
               />
             )}
+            {section === 'historial' && <Historial />}
             {section === 'agregar-falla' && esAdmin && <AgregarFalla />}
             {section === 'administrar-fallas' && esAdmin && <AdministrarFallas />}
             {section === 'administrar-usuarios' && esAdmin && <AdministrarUsuarios />}

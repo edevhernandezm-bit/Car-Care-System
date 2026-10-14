@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   certezaNivel,
   certezaPorcentaje,
@@ -133,11 +134,26 @@ function SkeletonResultados() {
   );
 }
 
-export default function Resultados({ resultados, onVolver, onCambiarVehiculo }) {
+export default function Resultados({ resultados, onVolver, onCambiarVehiculo, onGuardar }) {
+  // El guardado ya no es automatico (2.4): el mecanico escribe sus observaciones
+  // y pulsa el boton. El estado vive aqui, que es quien las captura.
+  const [observaciones, setObservaciones] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const [errorGuardado, setErrorGuardado] = useState(null);
+
   if (!resultados) return null;
 
   const { error, cargando, fallas = [], vehiculo, sintomas, tipo_cambio } = resultados;
   const tasa = tipo_cambio;
+  const guardado = Boolean(resultados.guardado);
+
+  const guardar = async () => {
+    setGuardando(true);
+    setErrorGuardado(null);
+    const ok = await onGuardar(observaciones);
+    setGuardando(false);
+    if (!ok) setErrorGuardado('No se pudo guardar el diagnóstico. Inténtalo de nuevo.');
+  };
 
   return (
     <div className="diagnostico-container">
@@ -218,6 +234,48 @@ export default function Resultados({ resultados, onVolver, onCambiarVehiculo }) 
                   </div>
                 </article>
               ))}
+            </div>
+          )}
+
+          {!error && !cargando && (
+            <div className="card-section">
+              <h4>Observaciones</h4>
+              <label className="field-hint" htmlFor="observacionesDiagnostico">
+                Notas de este diagnóstico (mediciones, pruebas realizadas). Opcional, máximo 500
+                caracteres.
+              </label>
+              <textarea
+                id="observacionesDiagnostico"
+                className="observaciones-input"
+                value={observaciones}
+                onChange={(e) => setObservaciones(e.target.value)}
+                maxLength={500}
+                rows={4}
+                disabled={guardando || guardado}
+                aria-describedby="observacionesContador"
+              />
+              <p id="observacionesContador" className="field-hint">
+                {observaciones.length}/500 caracteres
+              </p>
+              {guardado ? (
+                <p className="text-success" role="status">
+                  Diagnóstico guardado en el historial.
+                </p>
+              ) : (
+                <button
+                  className="primary-btn"
+                  type="button"
+                  onClick={guardar}
+                  disabled={guardando}
+                >
+                  {guardando ? 'Guardando…' : 'Guardar diagnóstico'}
+                </button>
+              )}
+              {errorGuardado && (
+                <p className="text-danger" role="alert">
+                  {errorGuardado}
+                </p>
+              )}
             </div>
           )}
         </div>

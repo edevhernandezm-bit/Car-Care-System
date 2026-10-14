@@ -79,6 +79,9 @@
      de texto. Cuando haga falta un estado positivo se declara con su propio
      nombre y con un valor que si cumpla 4.5:1. */
   --danger-text: #f87171;
+  /* Estado positivo (diagnostico guardado). El verde habitual #22c55e no sirve
+     como texto sobre blanco, pero sobre --surface este #4ade80 mide ~10:1. */
+  --ok-text: #4ade80;
   /* Fondo del resumen de errores. El texto lo aporta --danger-text. */
   --danger-surface: #2a1518;
   /* El enlace del resumen tiene que leerse como accion, no como parte del
@@ -2132,4 +2135,78 @@ h4 {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* --- Observaciones del diagnostico e historial --- */
+
+/* El cuadro de observaciones vive en el panel de resultados, no en un
+   .form-grid, asi que repite el lenguaje visual de los campos (borde de
+   control, fondo de superficie) sin heredarlo. */
+.observaciones-input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-input);
+  background: var(--surface);
+  color: var(--text);
+  resize: vertical;
+}
+
+.observaciones-input:focus-visible {
+  border-color: var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.observaciones-input:disabled {
+  opacity: 0.75;
+  cursor: not-allowed;
+}
+
+.text-success {
+  color: var(--ok-text);
+  font-weight: 600;
+}
+
+.historial-lista {
+  display: grid;
+  gap: 16px;
+}
+
+.historial-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.historial-fallas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.historial-falla {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.82rem;
+  color: var(--text);
+}
+
+.historial-observaciones {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-left: 2px solid var(--border-control);
+  background: var(--surface-sunken);
+  border-radius: 0 var(--radius-input) var(--radius-input) 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

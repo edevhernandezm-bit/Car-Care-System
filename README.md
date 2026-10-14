@@ -79,10 +79,11 @@ Para detener:
 
 ### Sonda de salud
 
-`GET /health` responde sin sesion con `200 {"status":"ok","db":"conectado"}` o
+`GET /health` responde sin sesion con `200 {"status":"ok","db":"conectado",...}` o
 `503 {"status":"degradado","db":"desconectado"}` segun MongoDB, y es la que usa
-el balanceador como health check. El motor expone la suya, tambien publica, en
-`http://localhost:8000/health`.
+el balanceador como health check. Ademas publica `motores: { sanos, total }`: el
+conteo de replicas del motor que el gateway tiene disponibles (los destinos no
+salen). El motor expone la suya, tambien publica, en `http://localhost:8000/health`.
 
 Es de las pocas rutas abiertas: junto con `GET /api/config/tipo-cambio` y
 `POST /api/auth/logout`, es lo que el navegador necesita antes de entrar. El
@@ -123,14 +124,41 @@ Desde la raiz, todo de una vez:
 npm test
 ```
 
+### Prueba de carga (solo local)
+
+`scripts/load-test.mjs` mide el gateway bajo concurrencia (por defecto 30
+conexiones durante 10 s contra `POST /api/prolog/api/diagnostico`) y guarda el
+resultado en `scripts/resultados/`. Necesita la API y el motor ya levantados.
+
+El limitador de la API corta con 429 antes de que la medicion sea util, asi que
+en local se arranca la API con el interruptor. Con `NODE_ENV=production` el
+interruptor se ignora a proposito: es solo una comodidad de desarrollo.
+
+```powershell
+# Terminal 1: motor (8000). Terminal 2: API (5000) con los limites apagados
+$env:DESACTIVAR_LIMITES="1"; npm --prefix backend start
+
+# Terminal 3: la medicion
+$env:LOAD_TEST_USER="admin"; $env:LOAD_TEST_PASS="<clave>"
+node scripts/load-test.mjs
+```
+
+Variables utiles: `CONNECTIONS`, `DURATION`, `LABEL` (etiqueta del archivo de
+salida, p. ej. `2-replicas`), `API_URL`. Para medir con varias replicas del
+motor, arranque la API con `PROLOG_BASES=http://localhost:8000,http://localhost:8001`
+y una segunda instancia del motor en el 8001. El script se niega a correr contra
+un host remoto salvo que se pase `--permitir-remoto`.
+
 ### Variables de entorno
 
 | Variable | Por defecto | Para que sirve |
 |---|---|---|
 | `PORT` | `5000` | Puerto de la API; el motor tambien la lee (con `8000` por defecto). Vite lo lee para apuntar su proxy, asi que basta con definirla en un solo lado |
 | `MONGO_URI` | `mongodb://localhost:27017/car_care_system` | Conexion a MongoDB |
-| `PROLOG_BASE` | `http://localhost:8000` | Direccion del motor para el gateway |
-| `PROLOG_TIMEOUT_MS` | `3000` | Tiempo maximo de espera del gateway |
+| `PROLOG_BASE` | `http://localhost:8000` | Direccion del motor para el gateway (caso de una sola replica) |
+| `PROLOG_BASES` | — | Varias replicas del motor separadas por comas (manda sobre `PROLOG_BASE`). El gateway reparte en round-robin, evita una replica que falle durante el cooldown y devuelve 502 solo si fallan todas |
+| `PROLOG_TIMEOUT_MS` | `3000` | Tiempo maximo de espera del gateway, por intento y replica |
+| `PROLOG_REPLICA_COOLDOWN_MS` | `30000` | Tiempo que se aparta del reparto una replica que acaba de fallar |
 | `CORS_ORIGIN` | `http://localhost:5173` | Origenes permitidos, separados por comas, o `*` |
 | `SESSION_SECRET` | valor de desarrollo | Frase que firma las cookies de sesion. **En produccion es obligatoria**: sin ella la API no arranca |
 | `TRUST_PROXY_HOPS` | `2` | Proxies delante de la API (CloudFront y el ALB). Sin declararlos, `req.ip` seria la IP interna del ALB |
@@ -139,6 +167,7 @@ npm test
 | `RATE_LIMIT_WINDOW_MS` | `900000` | Ventana del limite de peticiones (15 min) |
 | `RATE_LIMIT_MAX` | `300` | Peticiones por ventana e IP para toda la API |
 | `LOGIN_RATE_LIMIT_MAX` | `20` | Intentos de login fallidos por ventana y por `(IP, usuario)` |
+| `DESACTIVAR_LIMITES` | `0` | Con `1`, apaga los dos limitadores para medir carga en local. **Nunca aplica con `NODE_ENV=production`** |
 | `DEBUG_IP` | `0` | Con `1`, registra la IP y `X-Forwarded-For` de cada intento de login, para calibrar `TRUST_PROXY_HOPS` |
 | `ADMIN_USERNAME` | — | Usuario del primer administrador (solo si la base esta vacia) |
 | `ADMIN_PASSWORD` | — | Contraseña del primer administrador (solo si la base esta vacia) |

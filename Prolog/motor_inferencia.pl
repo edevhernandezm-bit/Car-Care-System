@@ -57,7 +57,6 @@
 % devolverlas en el diagnóstico. La base estática no las modela, así que se
 % degradan a lista vacía al construir el diccionario.
 :- dynamic causa_falla/2.
-:- dynamic observaciones_falla/2.
 
 :- use_module(library(lists)).
 
@@ -1470,7 +1469,6 @@ falla_a_dict(Disparos, Certeza-Falla, Dict) :-
     % Las causas las declaran las fallas de usuario; la base estatica no las
     % modela, asi que degradan a lista vacia en vez de romper el diagnostico.
     (   causa_falla(Falla, Causas) -> true ; Causas = [] ),
-    (   observaciones_falla(Falla, Obs) -> true ; Obs = '' ),
     Dict = _{
         id: Falla,
         nombre: Nombre,
@@ -1483,8 +1481,7 @@ falla_a_dict(Disparos, Certeza-Falla, Dict) :-
         sintomas_relacionados: Respaldo,
         causas: Causas,
         fuente: Fuente,
-        confianza_dato: CD,
-        observaciones: Obs
+        confianza_dato: CD
     }.
 
 reparacion_a_nombre(R, Nombre) :-
@@ -1762,10 +1759,6 @@ crear_falla_dinamica(DictIn, Resp) :-
     ->  CertezaBase = CB
     ;   CertezaBase = 0.7
     ),
-    (   get_dict(observaciones, DictIn, ObsIn)
-    ->  (   string(ObsIn) -> Obs = ObsIn ; term_string(ObsIn, Obs) )
-    ;   Obs = ''
-    ),
     (   falla_usuario(PrologId)
     ->  retractar_falla_dinamica(PrologId)
     ;   true
@@ -1789,7 +1782,6 @@ crear_falla_dinamica(DictIn, Resp) :-
     assertz(confianza_dato(PrologId, CDAtom)),
     assertz(explicacion(PrologId)),
     assertz(falla_usuario(PrologId)),
-    (   Obs == '' -> true ; assertz(observaciones_falla(PrologId, Obs)) ),
     Resp = _{status:'success', prologId:PrologId}.
 
 % Normaliza un nombre al `prologId` que usa el resto del sistema. Replica
@@ -1937,7 +1929,6 @@ falla_meta_a_dict(F, Dict) :-
     (   fuente_falla(F, Fuente) -> true
     ;   Fuente = 'Base original del sistema (sin fuente registrada)' ),
     (   confianza_dato(F, CD) -> true ; CD = no_registrada ),
-    (   observaciones_falla(F, Obs) -> true ; Obs = '' ),
     Dict = _{
         id: F,
         nombre: N,
@@ -1947,8 +1938,7 @@ falla_meta_a_dict(F, Dict) :-
         moneda: Moneda,
         reparaciones: RepNombres,
         fuente: Fuente,
-        confianza_dato: CD,
-        observaciones: Obs
+        confianza_dato: CD
     }.
 
 % NUEVO endpoint (aditivo): historial de diagnosticos en memoria.
@@ -1996,7 +1986,6 @@ retractar_falla_dinamica(F) :-
     retractall(causa_falla(F,_)),
     retractall(aplica_a(F,_,_,_,_)),
     retractall(falla_usuario(F)),
-    retractall(observaciones_falla(F,_)),
     maplist(retractar_sintoma_huerfano, SintomasDeLaFalla).
 
 % Un síntoma de usuario que ninguna falla viva (estática o dinámica) referencia

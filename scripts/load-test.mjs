@@ -121,7 +121,7 @@ if (r.errors > 0) fallos.push(`${r.errors} errores`);
 if (r.timeouts > 0) fallos.push(`${r.timeouts} timeouts`);
 if (c5xx > 0) fallos.push(`${c5xx} respuestas 5xx`);
 if (c401 > 0) fallos.push(`${c401} respuestas 401`);
-if (c429 > 0) fallos.push(`${c429} respuestas 429 (desactive los límites de tasa en local)`);
+if (c429 > 0) fallos.push(`${c429} respuestas 429 (arranque la API con DESACTIVAR_LIMITES=1 en local)`);
 if (pct2xx < 99) fallos.push(`solo ${pct2xx}% de respuestas 2xx (mínimo 99%)`);
 if (fallos.length) { console.error('PRUEBA FALLIDA: ' + fallos.join('; ')); process.exit(1); }
 console.log('PRUEBA OK');

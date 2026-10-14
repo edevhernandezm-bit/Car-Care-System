@@ -1959,3 +1959,347 @@ test('22 | FASE 7: la falla del administrador entra en la inferencia con sus cau
   assert.ok(!ids.includes(sintomas[0]), 'el sintoma de la falla borrada no debe quedar en el catalogo');
   assert.ok(ids.includes('sobrecalentamiento'), 'limpiar las dinamicas no debe tocar la base estatica');
 });
+
+// ---------------------------------------------------------------------------
+// 2.4 Observaciones del diagnostico
+// ---------------------------------------------------------------------------
+
+test('26 | API diagnósticos: las observaciones se recortan, se guardan y viajan al historial', async () => {
+  const payload = {
+    vehiculo: { marca: 'nissan', modelo: 'versa', anio: 2018 },
+    sintomas: ['ruido_motor'],
+    observaciones: '   Compresión baja en el cilindro 3.   ',
+    fallas: [{ falla: 'aceite_motor_bajo', certeza: 0.55 }],
+  };
+  const res = await fetchApi('/api/diagnosticos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  assert.equal(res.status, 201);
+  const creado = await res.json();
+  assert.equal(
+    creado.observaciones,
+    'Compresión baja en el cilindro 3.',
+    'los espacios de los extremos se recortan antes de guardar'
+  );
+
+  const historial = await (await fetchApi('/api/diagnosticos')).json();
+  const guardado = historial.find((d) => d._id === creado._id);
+  assert.ok(guardado, 'el diagnóstico con observaciones debe aparecer en el historial');
+  assert.equal(guardado.observaciones, 'Compresión baja en el cilindro 3.');
+});
+
+test('27 | API diagnósticos: las observaciones son opcionales, de texto y de máximo 500', async () => {
+  const base = {
+    vehiculo: { marca: 'nissan', modelo: 'versa', anio: 2018 },
+    sintomas: ['ruido_motor'],
+    fallas: [{ falla: 'aceite_motor_bajo', certeza: 0.55 }],
+  };
+  const enviar = (observaciones) =>
+    fetchApi('/api/diagnosticos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...base, observaciones }),
+    });
+
+  // Sin observaciones el diagnóstico se guarda igual y queda en ''.
+  const sinObs = await enviar(undefined);
+  assert.equal(sinObs.status, 201);
+  assert.equal((await sinObs.json()).observaciones, '');
+
+  // Un valor que no es texto se rechaza en vez de stringificarse a "[object Object]".
+  const noTexto = await enviar({ nota: 'x' });
+  assert.equal(noTexto.status, 400, 'las observaciones no textuales deben rechazarse');
+
+  // 500 exactos pasan; 501 se rechaza. El límite es del diagnóstico, no del catálogo.
+  assert.equal((await enviar('a'.repeat(500))).status, 201);
+  assert.equal((await enviar('a'.repeat(501))).status, 400);
+});
+
+// ---------------------------------------------------------------------------
+// 2.1 Mutex del catálogo frente a diagnósticos
+// ---------------------------------------------------------------------------
+
+test('28 | Motor Prolog: mutex compartido — alta, bootstrap, baja y diagnóstico concurrentes no se traban ni dejan el catálogo roto', async () => {
+  const base = `http://localhost:${PUERTO_PROLOG}`;
+  const jsonToken = { 'Content-Type': 'application/json', ...CH_MOTOR };
+
+  const crear = (id, sintoma) =>
+    fetch(`${base}/api/fallas`, {
+      method: 'POST',
+      headers: jsonToken,
+      body: JSON.stringify({
+        nombre: `Falla ${id}`,
+        prologId: id,
+        sintomas: [sintoma],
+        vehiculo: { marca: 'gen', modelo: 'gen', transmision: 'desconocida' },
+        certezaBase: 0.75,
+      }),
+    });
+  const diagnosticar = (sintoma) =>
+    fetch(`${base}/api/diagnostico`, {
+      method: 'POST',
+      headers: jsonToken,
+      body: JSON.stringify({ marca: 'gen', modelo: 'gen', anio: 0, sintomas: [sintoma] }),
+    });
+  const bootstrap = () =>
+    fetch(`${base}/api/fallas/bootstrap`, {
+      method: 'POST',
+      headers: jsonToken,
+      body: JSON.stringify({
+        fallas: [
+          {
+            nombre: 'Falla mutex_a_e2e',
+            prologId: 'mutex_a_e2e',
+            sintomas: ['mutex_sintoma_e2e'],
+            vehiculo: { marca: 'gen', modelo: 'gen', transmision: 'desconocida' },
+          },
+        ],
+      }),
+    });
+  const borrar = (id) => fetch(`${base}/api/fallas?prologId=${id}`, { method: 'DELETE', headers: CH_MOTOR });
+
+  const sintomaCompartido = 'mutex_sintoma_e2e';
+  await crear('mutex_a_e2e', sintomaCompartido);
+  await crear('mutex_b_e2e', sintomaCompartido);
+
+  // El mutex es el mismo para diagnóstico y para toda mutación del catálogo. Si
+  // alguno anidara el cerrojo, esta tormenta dejaría el motor colgado y el test
+  // no terminaría; si el catálogo se escribiera a mitad de una inferencia, saldría
+  // un 5xx. Ambas cosas son lo que el mutex previene.
+  const operaciones = [];
+  for (let i = 0; i < 6; i++) {
+    operaciones.push(crear('mutex_a_e2e', sintomaCompartido));
+    operaciones.push(bootstrap());
+    operaciones.push(diagnosticar(sintomaCompartido));
+    operaciones.push(crear('mutex_b_e2e', sintomaCompartido));
+  }
+  const resultados = await Promise.all(operaciones);
+  for (const r of resultados) {
+    assert.ok(
+      r.status >= 200 && r.status < 300,
+      `ninguna operación concurrente debe fallar (status ${r.status})`
+    );
+  }
+
+  // Coherencia tras la tormenta: una falla nueva se crea, infiere y se borra. Si
+  // el mutex hubiera quedado tomado o el catálogo a medias, esto fallaría.
+  const sintomaFinal = 'mutex_sintoma_final_e2e';
+  await crear('mutex_final_e2e', sintomaFinal);
+  const conLaFalla = await (await diagnosticar(sintomaFinal)).json();
+  assert.equal(conLaFalla.status, 'success');
+  assert.ok(
+    conLaFalla.fallas.some((f) => f.id === 'mutex_final_e2e'),
+    'tras la concurrencia el catálogo debe seguir infiriendo con normalidad'
+  );
+
+  await borrar('mutex_final_e2e');
+  const sinLaFalla = await (await diagnosticar(sintomaFinal)).json();
+  assert.ok(
+    !sinLaFalla.fallas.some((f) => f.id === 'mutex_final_e2e'),
+    'tras la concurrencia el borrado debe seguir retirando la falla'
+  );
+
+  // Limpieza de las fallas del storm (comparten síntoma de usuario).
+  await borrar('mutex_a_e2e');
+  await borrar('mutex_b_e2e');
+});
+
+// ---------------------------------------------------------------------------
+// 2.2 Gateway sobre varias réplicas
+// ---------------------------------------------------------------------------
+
+test('29 | Gateway multi-réplica: si una réplica cae, la otra atiende y /health cuenta las sanas', async () => {
+  const puerto = PUERTO_API + 9;
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: {
+      ...process.env,
+      PORT: String(puerto),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      // Una réplica viva y una muerta: el reparto debe caer sola a la viva.
+      PROLOG_BASES: `http://localhost:${PUERTO_PROLOG},http://127.0.0.1:9`,
+      PROLOG_TIMEOUT_MS: '400',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-multi.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-multi.err'), 'w') }));
+
+  try {
+    await sondeo(`http://localhost:${puerto}/api/config/tipo-cambio`, { timeout: 30000 });
+    const cookie = await sesionGateway();
+    const base = `http://localhost:${puerto}`;
+
+    // El round-robin rota el punto de entrada: la segunda lectura empieza por la
+    // réplica muerta, falla rápido y cae a la viva. Ninguna debe devolver 502
+    // mientras quede una réplica sana.
+    for (let i = 0; i < 2; i++) {
+      const res = await peticionGateway(base, '/api/prolog/api/sintomas', { cookie });
+      assert.equal(res.status, 200, `la lectura ${i + 1} debe atenderse desde la réplica viva`);
+      const cuerpo = await res.json();
+      assert.ok(Array.isArray(cuerpo.sintomas), 'la respuesta viene del motor, no del gateway');
+    }
+
+    const salud = await (await fetch(`${base}/health`)).json();
+    assert.equal(salud.motores.total, 2, '/health publica el total de réplicas');
+    assert.equal(salud.motores.sanos, 1, 'la réplica muerta sale del conteo de sanas');
+    assert.doesNotMatch(
+      JSON.stringify(salud),
+      /127\.0\.0\.1:9/,
+      'los destinos de las réplicas no se publican'
+    );
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2.3 Catálogo difundido a todas las réplicas
+// ---------------------------------------------------------------------------
+
+test('30 | Catálogo multi-réplica: alta y baja se difunden a todas las réplicas del motor', async () => {
+  const puertoMotor2 = PUERTO_PROLOG + 1;
+  const puertoApi2 = PUERTO_API + 10;
+
+  const motor2 = spawn(
+    SWIPL,
+    ['-q', '-f', PL_FILE, '-g', `server(${puertoMotor2}), sleep(3600)`, '-t', 'halt'],
+    { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, MOTOR_TOKEN: MOTOR_TOKEN_E2E } }
+  );
+  motor2.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('prolog2.out'), 'w') }));
+  motor2.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('prolog2.err'), 'w') }));
+
+  const api2 = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: {
+      ...process.env,
+      PORT: String(puertoApi2),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      PROLOG_BASES: `http://localhost:${PUERTO_PROLOG},http://localhost:${puertoMotor2}`,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  api2.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-dos-motores.out'), 'w') }));
+  api2.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-dos-motores.err'), 'w') }));
+
+  const infiere = async (puertoMotor, id) => {
+    const res = await fetch(`http://localhost:${puertoMotor}/api/diagnostico`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...CH_MOTOR },
+      body: JSON.stringify({ marca: 'gen', modelo: 'gen', anio: 0, sintomas: ['difusion_sintoma_e2e'] }),
+    });
+    const data = await res.json();
+    return (data.fallas || []).some((f) => f.id === id);
+  };
+  const esperar = async (puertoMotor, id, presente) => {
+    for (let i = 0; i < 20; i++) {
+      if ((await infiere(puertoMotor, id)) === presente) return true;
+      await sleep(250);
+    }
+    return false;
+  };
+
+  try {
+    await sondeo(`http://localhost:${puertoMotor2}/api/sintomas`, { timeout: 60000, headers: CH_MOTOR });
+    await sondeo(`http://localhost:${puertoApi2}/api/config/tipo-cambio`, { timeout: 60000 });
+    const base2 = `http://localhost:${puertoApi2}`;
+
+    // La sesión vive en Mongo: la misma cookie de la API principal vale aquí.
+    const cookie = await sesionGateway();
+
+    const creada = await peticionGateway(base2, '/api/fallas', {
+      method: 'POST',
+      cookie,
+      body: {
+        nombre: 'Difusion e2e',
+        sintomas: ['difusion_sintoma_e2e'],
+        vehiculo: { marca: 'gen', modelo: 'gen', transmision: 'desconocida' },
+        causas: ['causa de difusion'],
+        procedimiento: ['paso de difusion'],
+        precioMin: 100,
+        precioMax: 200,
+        urgencia: 'media',
+        confianzaDato: 'media',
+      },
+    });
+    assert.equal(creada.status, 201, 'la API de 2 réplicas debe crear la falla');
+    const doc = await creada.json();
+
+    // La difusión es asíncrona (la API responde sin esperar al motor): se sondea
+    // cada réplica hasta que la falla aparece en las DOS.
+    assert.ok(await esperar(PUERTO_PROLOG, 'difusion_e2e', true), 'la réplica 1 debe recibir la falla');
+    assert.ok(await esperar(puertoMotor2, 'difusion_e2e', true), 'la réplica 2 debe recibir la falla');
+
+    const borrada = await peticionGateway(base2, `/api/fallas/${doc._id}`, { method: 'DELETE', cookie });
+    assert.equal(borrada.status, 200);
+
+    assert.ok(await esperar(PUERTO_PROLOG, 'difusion_e2e', false), 'la réplica 1 debe retirarla');
+    assert.ok(await esperar(puertoMotor2, 'difusion_e2e', false), 'la réplica 2 debe retirarla');
+  } finally {
+    if (api2.pid) matarArbol(api2.pid);
+    if (motor2.pid) matarArbol(motor2.pid);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2.5 Interruptor de límites para pruebas de carga
+// ---------------------------------------------------------------------------
+
+test('31 | 2.5 | DESACTIVAR_LIMITES apaga los límites solo en local, nunca en producción', async () => {
+  const arrancarApi = async (puerto, extra) => {
+    const proc = spawn(process.execPath, ['server.js'], {
+      cwd: BACKEND_DIR,
+      env: {
+        ...process.env,
+        PORT: String(puerto),
+        MONGO_URI: TEST_DB,
+        MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+        ...extra,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath(`api-limites-${puerto}.out`), 'w') }));
+    proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath(`api-limites-${puerto}.err`), 'w') }));
+    await sondeo(`http://localhost:${puerto}/health`, { timeout: 30000 });
+    return proc;
+  };
+
+  // En local el interruptor deja pasar más allá del cupo (que aquí es 2).
+  let proc = await arrancarApi(PUERTO_API + 13, { RATE_LIMIT_MAX: '2', DESACTIVAR_LIMITES: '1' });
+  try {
+    const ruta = `http://localhost:${PUERTO_API + 13}/api/config/tipo-cambio`;
+    for (let i = 0; i < 5; i += 1) {
+      assert.equal(
+        (await fetch(ruta)).status,
+        200,
+        `con DESACTIVAR_LIMITES la petición ${i + 1} debe pasar`
+      );
+    }
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
+
+  // En producción la variable se ignora: el cupo vuelve a cortar.
+  proc = await arrancarApi(PUERTO_API + 14, {
+    RATE_LIMIT_MAX: '2',
+    DESACTIVAR_LIMITES: '1',
+    NODE_ENV: 'production',
+    SESSION_SECRET: 'secreto-sesion-limites-e2e',
+  });
+  try {
+    const ruta = `http://localhost:${PUERTO_API + 14}/api/config/tipo-cambio`;
+    assert.equal((await fetch(ruta)).status, 200);
+    assert.equal((await fetch(ruta)).status, 200);
+    assert.equal(
+      (await fetch(ruta)).status,
+      429,
+      'en producción el interruptor no debe apagar el limitador'
+    );
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
+});

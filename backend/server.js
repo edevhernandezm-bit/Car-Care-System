@@ -22,8 +22,135 @@ app.set('trust proxy', TRUST_PROXY_HOPS);
 // Motor de inferencia Prolog. El navegador ya no lo llama directo: todo pasa por
 // este gateway same-origin, de modo que el frontend funciona igual en dev (proxy
 // de Vite) y en produccion (nginx -> Express -> Prolog), sin CORS ni HTTP mixto.
-const PROLOG_BASE = process.env.PROLOG_BASE || 'http://localhost:8000';
 const PROLOG_TIMEOUT_MS = Number(process.env.PROLOG_TIMEOUT_MS) || 3000;
+// Una replica que falla se deja fuera del reparto este tiempo antes de reintentarla.
+const PROLOG_REPLICA_COOLDOWN_MS = Number(process.env.PROLOG_REPLICA_COOLDOWN_MS) || 30000;
+
+// El motor de inferencia puede correr en varias replicas identicas detras de este
+// gateway. La lista llega en PROLOG_BASES (separada por comas); si no esta, se usa
+// PROLOG_BASE como el caso de una sola replica (y su valor por defecto local). Los
+// terminos se normalizan sin barra final para poder concatenar la ruta tal cual.
+const PROLOG_BASES = (
+  process.env.PROLOG_BASES
+    ? process.env.PROLOG_BASES.split(',')
+    : [process.env.PROLOG_BASE || 'http://localhost:8000']
+)
+  .map((s) => s.trim().replace(/\/+$/, ''))
+  .filter((s, i, arr) => s && arr.indexOf(s) === i);
+
+// Estado por replica:
+//   fallandoHasta  instante (ms) hasta el que se evita la replica tras un fallo.
+//   desactualizada la replica se perdio alguna mutacion del catalogo (o el
+//                   bootstrap de arranque) y necesita recargarlo entero al volver.
+const estadoReplicas = new Map(
+  PROLOG_BASES.map((base) => [base, { fallandoHasta: 0, desactualizada: false, resincronizando: false }])
+);
+// Cursor del round-robin: rota el punto de entrada para repartir la carga.
+let cursorReplica = 0;
+
+// Una replica en cooldown se salta al elegir destino, pero si TODAS lo estan se
+// intentan igual (mejor intentarlo que devolver 502 sin probar).
+function replicaSana(base) {
+  return Date.now() >= estadoReplicas.get(base).fallandoHasta;
+}
+
+// Orden de intento: desde el cursor (round-robin) y con las sanas primero.
+function ordenReplicas() {
+  const n = PROLOG_BASES.length;
+  const rotadas = [];
+  for (let i = 0; i < n; i += 1) rotadas.push(PROLOG_BASES[(cursorReplica + i) % n]);
+  cursorReplica = (cursorReplica + 1) % n;
+  return [...rotadas.filter(replicaSana), ...rotadas.filter((b) => !replicaSana(b))];
+}
+
+function marcarReplicaCaida(base, err) {
+  estadoReplicas.get(base).fallandoHasta = Date.now() + PROLOG_REPLICA_COOLDOWN_MS;
+  console.warn(
+    `[prolog] Replica ${base} no respondio (${err && (err.name || err.message)}); fuera ${PROLOG_REPLICA_COOLDOWN_MS} ms`
+  );
+}
+
+// Una replica que responde vuelve al reparto; si se perdio alguna mutacion del
+// catalogo, se recarga el catalogo COMPLETO desde Mongo (la fuente de verdad).
+function marcarReplicaViva(base) {
+  const estado = estadoReplicas.get(base);
+  estado.fallandoHasta = 0;
+  if (estado.desactualizada && !estado.resincronizando) {
+    estado.resincronizando = true;
+    resincronizarReplica(base).finally(() => {
+      estado.resincronizando = false;
+    });
+  }
+}
+
+// Reenvia el catalogo entero a UNA replica. Se usa cuando una replica que se
+// habia perdido mutaciones vuelve a responder. No se espera desde quien la
+// dispara: la peticion que la reavivo no debe pagar el costo de la recarga.
+async function resincronizarReplica(base) {
+  try {
+    const activas = await Falla.find({ activo: true, deletedAt: null }).lean();
+    const r = await fetch(`${base}/api/fallas/bootstrap`, {
+      method: 'POST',
+      headers: CABECERAS_MOTOR,
+      body: JSON.stringify({ fallas: activas.map(payloadProlog) }),
+      signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS * 2),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    estadoReplicas.get(base).desactualizada = false;
+    console.log(`[prolog] Replica ${base} resincronizada (${activas.length} fallas)`);
+  } catch (e) {
+    // Sigue desactualizada: se reintentara en la proxima respuesta de esa replica.
+    console.warn(`[prolog] No se pudo resincronizar ${base}: ${e.message}`);
+  }
+}
+
+// Envia una peticion al cluster. Ante un fallo de RED o de timeout prueba la
+// siguiente replica; una respuesta HTTP (aunque sea 5xx) se devuelve tal cual,
+// porque ya es una respuesta real del motor. El timeout es por intento, no global.
+async function pedirAMotor(ruta, init) {
+  let ultimoError;
+  for (const base of ordenReplicas()) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), PROLOG_TIMEOUT_MS);
+    try {
+      const respuesta = await fetch(`${base}${ruta}`, { ...init, signal: controller.signal });
+      marcarReplicaViva(base);
+      return { respuesta, base };
+    } catch (err) {
+      ultimoError = err;
+      marcarReplicaCaida(base, err);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw Object.assign(new Error('No se pudo contactar al motor Prolog'), {
+    status: 502,
+    causa: ultimoError,
+  });
+}
+
+// Difunde una mutacion del catalogo a TODAS las replicas, sin reintento: Mongo ya
+// guardo el cambio (fuente de verdad), y una replica que no responda queda marcada
+// desactualizada y se recargara entera cuando vuelva (ver marcarReplicaViva).
+function difundirAReplicas(ruta, init) {
+  for (const base of PROLOG_BASES) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), PROLOG_TIMEOUT_MS);
+    fetch(`${base}${ruta}`, { ...init, signal: controller.signal })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        // Responde: se levanta el cooldown, pero NO se limpia desactualizada (le
+        // siguen faltando las mutaciones anteriores; eso lo resuelve la recarga).
+        estadoReplicas.get(base).fallandoHasta = 0;
+      })
+      .catch((err) => {
+        estadoReplicas.get(base).desactualizada = true;
+        console.warn(`[prolog] ${ruta} no aplicado en ${base}: ${err.message}`);
+      })
+      .finally(() => clearTimeout(timeout));
+  }
+}
+
 // Token que comparte con el motor. El motor rechaza con 401 cualquier peticion
 // que no lo traiga (salvo su preflight), porque su CRUD no exige nada por si
 // mismo: sin esto, quien alcance el puerto del motor vacia el catalogo. Debe ser
@@ -141,11 +268,21 @@ const RATE_LIMIT_VENTANA_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX ?? 300);
 const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX ?? 20);
 
+// Interruptor SOLO PARA LOCAL: con DESACTIVAR_LIMITES=1 se saltan los dos
+// limitadores para poder medir carga sin que un 429 corte la corrida. En
+// produccion no aplica NUNCA, aunque la variable venga puesta en el entorno.
+const DESACTIVAR_LIMITES =
+  process.env.DESACTIVAR_LIMITES === '1' && process.env.NODE_ENV !== 'production';
+if (DESACTIVAR_LIMITES) {
+  console.warn('[limites] DESACTIVAR_LIMITES=1: limitadores apagados (solo local).');
+}
+
 const limitadorApi = rateLimit({
   windowMs: RATE_LIMIT_VENTANA_MS,
   limit: RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: () => DESACTIVAR_LIMITES,
   message: { error: 'Demasiadas peticiones. Intenta mas tarde.' },
 });
 
@@ -155,6 +292,7 @@ const limitadorLogin = rateLimit({
   skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: () => DESACTIVAR_LIMITES,
   // La clave suma origen y usuario normalizado: el cupo de una cuenta es el par
   // (IP, usuario). Asi un atacante desde su red solo agota su propio cupo y no
   // puede dejar fuera a la victima que entra desde otra. `ipKeyGenerator`
@@ -341,11 +479,23 @@ async function alinearIndicePrologId() {
 async function esperarMotor() {
   let espera = 500;
   for (let intento = 1; intento <= 4; intento += 1) {
-    try {
-      const r = await fetch(`${PROLOG_BASE}/health`, { signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS) });
-      if (r.ok) return true;
-    } catch {
-      // Todavia no escucha; se reintenta.
+    const sondas = await Promise.all(
+      PROLOG_BASES.map(async (base) => {
+        try {
+          const r = await fetch(`${base}/health`, { signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS) });
+          return r.ok;
+        } catch {
+          return false;
+        }
+      })
+    );
+    // Basta con que UNA replica responda: el servicio esta util y las demas se
+    // marcan desactualizadas para recargarlas cuando vuelvan.
+    if (sondas.some(Boolean)) {
+      PROLOG_BASES.forEach((base, i) => {
+        if (!sondas[i]) estadoReplicas.get(base).desactualizada = true;
+      });
+      return true;
     }
     if (intento < 4) {
       await new Promise((resolve) => { setTimeout(resolve, espera); });
@@ -358,7 +508,7 @@ async function esperarMotor() {
 async function bootstrapFallasDinamicas() {
   try {
     if (!(await esperarMotor())) {
-      console.error('[bootstrap] El motor no respondio su sonda: no se cargaron las fallas dinamicas.');
+      console.error('[bootstrap] Ninguna replica del motor respondio su sonda: no se cargaron las fallas dinamicas.');
       return;
     }
     const activas = await Falla.find({ activo: true, deletedAt: null }).lean();
@@ -367,21 +517,35 @@ async function bootstrapFallasDinamicas() {
     // ya no quedara ninguna falla viva dejaba en Prolog las dinamicas del
     // arranque anterior, porque el motor solo se limpia cuando alguien le envia
     // un bootstrap. El lote vacio es el unico modo de limpar.
-    const r = await fetch(`${PROLOG_BASE}/api/fallas/bootstrap`, {
-      method: 'POST',
-      headers: CABECERAS_MOTOR,
-      body: JSON.stringify({ fallas: activas.map(payloadProlog) }),
-      // El arranque espera de verdad a que Prolog responda (a diferencia de la
-      // sincronizacion por peticion), porque si no el primer diagnostico podria
-      // correr contra un motor sin las fallas de Mongo.
-      signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS * 2),
-    });
-    if (!r.ok) throw new Error(`Bootstrap Prolog HTTP ${r.status}`);
-    const j = await r.json();
+    const cuerpo = JSON.stringify({ fallas: activas.map(payloadProlog) });
+    // El arranque espera de verdad a que cada replica responda (a diferencia de la
+    // difusion por peticion), porque si no el primer diagnostico podria correr
+    // contra un motor sin las fallas de Mongo. La que no responda queda
+    // desactualizada y se recargara entera cuando vuelva.
+    const resultados = await Promise.all(
+      PROLOG_BASES.map(async (base) => {
+        try {
+          const r = await fetch(`${base}/api/fallas/bootstrap`, {
+            method: 'POST',
+            headers: CABECERAS_MOTOR,
+            body: cuerpo,
+            signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS * 2),
+          });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          estadoReplicas.get(base).desactualizada = false;
+          return r.json();
+        } catch (e) {
+          estadoReplicas.get(base).desactualizada = true;
+          console.warn(`[bootstrap] Replica ${base} no recargada: ${e.message}`);
+          return null;
+        }
+      })
+    );
+    const cargadas = resultados.filter(Boolean).length;
     console.log(
       activas.length === 0
-        ? '[bootstrap] Motor sin fallas dinámicas de usuario'
-        : `[bootstrap] Fallas dinámicas cargadas en Prolog: ${j.count}`
+        ? `[bootstrap] Motor sin fallas dinámicas de usuario (${cargadas}/${PROLOG_BASES.length} réplicas)`
+        : `[bootstrap] Fallas dinámicas cargadas en ${cargadas}/${PROLOG_BASES.length} réplicas (${activas.length})`
     );
   } catch (e) {
     console.error('[bootstrap] Error cargando fallas dinámicas:', e.message);
@@ -463,29 +627,31 @@ function autorizarGatewayProlog(req, res, next) {
 }
 
 // `req.url` ya viene sin el prefijo de montaje: /api/prolog/api/sintomas ->
-// http://localhost:8000/api/sintomas
+// http://<replica>/api/sintomas
 app.use('/api/prolog', autorizarGatewayProlog, async (req, res, next) => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), PROLOG_TIMEOUT_MS);
   try {
     const init = {
       method: req.method,
       headers: { ...CABECERAS_MOTOR, 'Content-Type': req.headers['content-type'] || 'application/json' },
-      signal: controller.signal,
     };
     if (req.method !== 'GET' && req.method !== 'HEAD' && req.body !== undefined) {
       init.body = JSON.stringify(req.body);
     }
 
-    const respuesta = await fetch(`${PROLOG_BASE}${req.url}`, init);
-    clearTimeout(timeout);
+    // Las rutas del gateway son seguras de reintentar en otra replica (lecturas
+    // de catalogo y la inferencia, que no muta el catalogo); la escritura del
+    // catalogo NO pasa por aqui, va por /api/fallas, que difunde sin reintentar.
+    const { respuesta, base } = await pedirAMotor(req.url, init);
 
     res.status(respuesta.status);
     res.setHeader('Content-Type', respuesta.headers.get('content-type') || 'application/json');
     res.send(await respuesta.text());
+
+    // Con varias replicas importa saber cual atendio. Con una sola seria ruido en
+    // cada peticion.
+    if (PROLOG_BASES.length > 1) console.log(`[prolog] ${req.method} ${req.url} -> ${base}`);
   } catch (err) {
-    clearTimeout(timeout);
-    next(Object.assign(new Error('No se pudo contactar al motor Prolog'), { status: 502 }));
+    next(err);
   }
 });
 
@@ -494,12 +660,17 @@ app.use('/api/prolog', autorizarGatewayProlog, async (req, res, next) => {
 // conexion, no consulta la base) y publica: el health check del ALB la pide sin
 // credenciales y tiene que llegar antes que la sesion. Si Mongo no esta
 // conectado la tarea no puede atender nada util (sesiones y datos viven ahi),
-// asi que se marca 503 para que el balanceador no le mande trafico.
+// asi que se marca 503 para que el balanceador no le mande trafico. Del cluster
+// de motores solo se publica el conteo de replicas sanas: los destinos no salen.
 app.get('/health', (_req, res) => {
   const conectado = mongoose.connection.readyState === 1;
   res.status(conectado ? 200 : 503).json({
     status: conectado ? 'ok' : 'degradado',
     db: conectado ? 'conectado' : 'desconectado',
+    motores: {
+      sanos: PROLOG_BASES.filter(replicaSana).length,
+      total: PROLOG_BASES.length,
+    },
   });
 });
 
@@ -616,6 +787,10 @@ const diagnosticoSchema = new mongoose.Schema({
     fuente: { type: String, required: true },
   },
   sintomas: [{ type: String }],
+  // Observaciones libres que el mecanico adjunta al diagnostico. Opcionales, se
+  // recortan y se acotan a 500 caracteres. Es texto que el usuario escribe: se
+  // guarda tal cual y la vista lo pinta como texto, nunca como HTML.
+  observaciones: { type: String, trim: true, maxlength: 500, default: '' },
   fallas: [
     {
       falla: { type: String, required: true },
@@ -662,6 +837,15 @@ app.get('/api/diagnosticos', requireAuth, async (_req, res, next) => {
 
 app.post('/api/diagnosticos', requireAuth, async (req, res, next) => {
   try {
+    const obsBruta = req.body.observaciones;
+    if (obsBruta != null && typeof obsBruta !== 'string') {
+      return res.status(400).json({ error: 'Las observaciones deben ser texto.' });
+    }
+    const observaciones = (obsBruta || '').trim();
+    if (observaciones.length > 500) {
+      return res.status(400).json({ error: 'Las observaciones no pueden pasar de 500 caracteres.' });
+    }
+
     const tasa = await resolverTipoCambio();
     const diag = new Diagnostico({
       vehiculo: {
@@ -676,6 +860,7 @@ app.post('/api/diagnosticos', requireAuth, async (req, res, next) => {
         fuente: tasa.fuente,
       },
       sintomas: req.body.sintomas || [],
+      observaciones,
       fallas: (req.body.fallas || []).map((f) => ({
         falla: f.falla,
         certeza: f.certeza,
@@ -947,18 +1132,16 @@ function payloadProlog(doc) {
 }
 
 // El motor es una copia de trabajo, no la fuente de verdad: MongoDB ya guardo el
-// cambio cuando esto corre. Si Prolog no responde se avisa y se sigue, porque
-// perder la escritura seria peor que dejar el motor desfasado; el bootstrap del
-// siguiente arranque vuelve a poner todo. Por eso no es await: la peticion
-// responde sin esperar al motor.
+// cambio cuando esto corre. La mutacion se difunde a TODAS las replicas del motor
+// (creacion y edicion son un POST con el mismo prologId, que reemplaza la regla).
+// Si una replica no responde se avisa y se sigue, porque perder la escritura en
+// Mongo seria peor que dejar esa replica desfasada: queda marcada y se recarga
+// entera cuando vuelva. Por eso no es await: la peticion responde sin esperar.
 function sincronizarFallaConProlog(doc) {
-  fetch(`${PROLOG_BASE}/api/fallas`, {
+  difundirAReplicas('/api/fallas', {
     method: 'POST',
     headers: CABECERAS_MOTOR,
     body: JSON.stringify(payloadProlog(doc)),
-    signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS),
-  }).catch((err) => {
-    console.warn(`[prolog] Falla ${doc.prologId} no sincronizada: ${err.message}`);
   });
 }
 
@@ -1341,12 +1524,11 @@ app.delete('/api/fallas/:id', requireAdmin, async (req, res, next) => {
     falla.deletedAt = new Date();
     await falla.save();
 
-    fetch(`${PROLOG_BASE}/api/fallas?prologId=${encodeURIComponent(falla.prologId)}`, {
+    // El borrado tambien se difunde a TODAS las replicas: la que no lo reciba
+    // queda desactualizada y se recarga entera cuando vuelva.
+    difundirAReplicas(`/api/fallas?prologId=${encodeURIComponent(falla.prologId)}`, {
       method: 'DELETE',
       headers: CABECERAS_MOTOR,
-      signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS),
-    }).catch((err) => {
-      console.warn(`[prolog] Falla ${falla.prologId} no retractada: ${err.message}`);
     });
 
     res.json({ ok: true, softDeleted: true });

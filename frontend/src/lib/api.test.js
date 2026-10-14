@@ -95,6 +95,27 @@ test('cuerpoDiagnostico: una consulta sin fallas es una consulta valida', () => 
   assert.deepEqual(cuerpo.sintomas, []);
 });
 
+test('cuerpoDiagnostico: las observaciones se recortan y viajan siempre como texto', () => {
+  // El campo es opcional en el schema (default ''), asi que la vista manda ''
+  // cuando el mecanico no escribe nada en vez de omitir la clave. Los espacios
+  // de los extremos se recortan aqui tambien; el backend lo repite como ultima
+  // barrera, pero recortar en el borde evita mandar ruido.
+  const conEspacios = cuerpoDiagnostico({
+    vehiculo: {},
+    sintomas: [],
+    fallas: [],
+    observaciones: '   prueba de compresión   ',
+  });
+  assert.equal(conEspacios.observaciones, 'prueba de compresión');
+
+  // Ausente o null colapsan al mismo '' que el esquema espera.
+  assert.equal(cuerpoDiagnostico({ vehiculo: {}, sintomas: [], fallas: [] }).observaciones, '');
+  assert.equal(
+    cuerpoDiagnostico({ vehiculo: {}, sintomas: [], fallas: [], observaciones: null }).observaciones,
+    ''
+  );
+});
+
 // Las fixtures de abajo son copia literal de lo que devuelve el handler
 // /api/stats/certeza de backend/server.js. Si cambia un nombre del lado de alla,
 // estas pruebas son las que lo dicen en vez de dejar un undefined en pantalla.
