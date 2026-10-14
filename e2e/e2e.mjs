@@ -2417,3 +2417,120 @@ test('32 | Catálogo multi-réplica: una réplica que arranca tarde se recarga e
     if (motor3 && motor3.pid) matarArbol(motor3.pid);
   }
 });
+
+// ---------------------------------------------------------------------------
+// 2.6 Semilla de datos
+// ---------------------------------------------------------------------------
+
+test('33 | API diagnostico: origen (usuario por defecto, semilla explicito, otro rechazado)', async () => {
+  const base = {
+    vehiculo: { marca: 'gen', modelo: 'gen', anio: 0 },
+    sintomas: ['chirrido_al_frenar'],
+    fallas: [{ falla: 'pastillas_freno', certeza: 0.72 }],
+  };
+  const crear = (cuerpo) =>
+    fetchApi('/api/diagnosticos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cuerpo),
+    });
+
+  // Sin origen es un diagnostico de usuario: es lo que manda la app.
+  const sinOrigen = await crear(base);
+  assert.equal(sinOrigen.status, 201);
+  assert.equal((await sinOrigen.json()).origen, 'usuario');
+
+  // 'semilla' se conserva tal cual.
+  const conSemilla = await crear({ ...base, origen: 'semilla' });
+  assert.equal(conSemilla.status, 201);
+  assert.equal((await conSemilla.json()).origen, 'semilla');
+
+  // Un origen desconocido se rechaza sin filtrar el error interno.
+  const invalido = await crear({ ...base, origen: 'otro' });
+  assert.equal(invalido.status, 400);
+  const cuerpo = await invalido.json();
+  assert.ok(cuerpo.error, 'el rechazo debe traer un mensaje');
+  assert.ok(!/cast|mongoose|stack|validation/i.test(cuerpo.error), 'no debe filtrar el error interno');
+});
+
+test('34 | 2.6 | La semilla guarda la certeza del motor y se niega a sembrar en remoto sin --url', async () => {
+  const puertoApiSeed = PUERTO_API + 16;
+  const seedPath = path.join(ROOT, 'scripts', 'seed-diagnosticos.mjs');
+
+  // Instancia propia de la API: la suite ya gasto peticiones del cupo de la
+  // principal, y la semilla hace decenas. Misma base y mismo motor.
+  const apiSeed = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: { ...process.env, PORT: String(puertoApiSeed), MONGO_URI: TEST_DB, MOTOR_TOKEN: MOTOR_TOKEN_E2E },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  apiSeed.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-semilla.out'), 'w') }));
+  apiSeed.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-semilla.err'), 'w') }));
+
+  try {
+    await sondeo(`http://localhost:${puertoApiSeed}/api/config/tipo-cambio`, { timeout: 60000 });
+    const baseSeed = `http://localhost:${puertoApiSeed}`;
+
+    // Las pruebas del último administrador vacian la coleccion de usuarios, y la
+    // cookie cacheada de la suite sobrevive porque la sesion vive en Mongo. La
+    // semilla, en cambio, vuelve a iniciar sesion: la cuenta tiene que existir.
+    await usuarioEnMongo({ ...CUENTA_API, role: 'estudiante_mecanica', nombre: 'API E2E' });
+    const cookie = await cookieDeApiE2E();
+
+    const correr = (args, extra = {}) =>
+      spawnSync(process.execPath, [seedPath, ...args], {
+        cwd: ROOT,
+        env: { ...process.env, SEED_USER: CUENTA_API.username, SEED_PASS: CUENTA_API.password, ...extra },
+        encoding: 'utf8',
+        timeout: 120000,
+      });
+
+    // Guard: un host remoto sin --url se rechaza antes de tocar la red.
+    const negado = correr(['--cantidad', '1'], { SEED_API_URL: 'https://ejemplo-remoto.invalid' });
+    assert.notEqual(negado.status, 0, 'sin --url no debe sembrar en un host remoto');
+    assert.match(`${negado.stdout}${negado.stderr}`, /flag explicito/);
+
+    // Siembra real contra local.
+    const corrida = correr(['--url', baseSeed, '--cantidad', '6']);
+    assert.equal(corrida.status, 0, `la semilla debe salir 0. stderr: ${corrida.stderr}`);
+    assert.match(corrida.stdout, /Semilla completada/);
+
+    const historial = await (
+      await fetch(`${baseSeed}/api/diagnosticos`, { headers: { Cookie: cookie } })
+    ).json();
+    const semilla = historial.filter((d) => d.origen === 'semilla');
+    assert.ok(semilla.length >= 6, `deben quedar los diagnosticos semilla (hay ${semilla.length})`);
+
+    // El lote alterna bandas para cubrir alta/media/baja.
+    const banda = (c) => (c >= 0.85 ? 'ALTA' : c >= 0.6 ? 'MEDIA' : 'BAJA');
+    const bandas = new Set(semilla.map((d) => banda(Math.max(...d.fallas.map((f) => f.certeza)))));
+    assert.deepEqual([...bandas].sort(), ['ALTA', 'BAJA', 'MEDIA'], 'debe cubrir las tres bandas');
+
+    // La certeza guardada es la del MOTOR: se reconsulta con los mismos datos y
+    // tiene que coincidir falla por falla. Esto es lo que separa "sembrar" de
+    // "inventar": la semilla no fabrica certezas.
+    for (const d of semilla) {
+      const v = d.vehiculo;
+      const res = await fetch(`${baseSeed}/api/prolog/api/diagnostico`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie },
+        body: JSON.stringify({
+          marca: v.marca,
+          modelo: v.modelo,
+          anio: v.anio,
+          transmision: v.transmision,
+          sintomas: d.sintomas,
+        }),
+      });
+      assert.equal(res.status, 200, 'el gateway debe responder a la reconsulta');
+      const fallas = (await res.json()).fallas || [];
+      assert.deepEqual(
+        d.fallas.map((f) => `${f.falla}:${f.certeza}`).sort(),
+        fallas.map((f) => `${f.id}:${f.certeza}`).sort(),
+        `la certeza guardada debe ser la del motor para ${JSON.stringify(d.sintomas)}`
+      );
+    }
+  } finally {
+    if (apiSeed.pid) matarArbol(apiSeed.pid);
+  }
+});

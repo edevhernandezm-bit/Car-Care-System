@@ -788,6 +788,10 @@ const diagnosticoSchema = new mongoose.Schema({
     fuente: { type: String, required: true },
   },
   sintomas: [{ type: String }],
+  // Procedencia del diagnostico. `usuario` es lo que llega de la app; `semilla`
+  // lo pone scripts/seed-diagnosticos.mjs. No es un campo de seguridad: solo
+  // etiqueta el dato para poder distinguir (y limpiar) los de demostracion.
+  origen: { type: String, enum: ['usuario', 'semilla'], default: 'usuario' },
   // Observaciones libres que el mecanico adjunta al diagnostico. Opcionales, se
   // recortan y se acotan a 500 caracteres. Es texto que el usuario escribe: se
   // guarda tal cual y la vista lo pinta como texto, nunca como HTML.
@@ -847,6 +851,11 @@ app.post('/api/diagnosticos', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: 'Las observaciones no pueden pasar de 500 caracteres.' });
     }
 
+    const origen = req.body.origen ?? 'usuario';
+    if (origen !== 'usuario' && origen !== 'semilla') {
+      return res.status(400).json({ error: 'El origen solo puede ser usuario o semilla.' });
+    }
+
     const tasa = await resolverTipoCambio();
     const diag = new Diagnostico({
       vehiculo: {
@@ -861,6 +870,7 @@ app.post('/api/diagnosticos', requireAuth, async (req, res, next) => {
         fuente: tasa.fuente,
       },
       sintomas: req.body.sintomas || [],
+      origen,
       observaciones,
       fallas: (req.body.fallas || []).map((f) => ({
         falla: f.falla,

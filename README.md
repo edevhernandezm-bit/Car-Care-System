@@ -149,6 +149,46 @@ motor, arranque la API con `PROLOG_BASES=http://localhost:8000,http://localhost:
 y una segunda instancia del motor en el 8001. El script se niega a correr contra
 un host remoto salvo que se pase `--permitir-remoto`.
 
+### Semilla de diagnosticos (datos de demostracion)
+
+`scripts/seed-diagnosticos.mjs` genera diagnosticos variados (marcas, modelos y
+sintomas) para poblar el historial y las estadisticas. Cada caso se consulta al
+**motor real** por el gateway (`POST /api/prolog/api/diagnostico`) y se guarda
+con `origen: "semilla"`: la certeza la calcula el motor, la semilla no la
+inventa. Necesita la API y el motor ya levantados y una cuenta existente; **no
+crea cuentas**.
+
+Para cubrir certezas altas, medias y bajas sin fabricarlas, genera sintomas
+coherentes (en su mayoria pares/tríos de la misma categoria, que son los que
+disparan las reglas complejas del motor) y toma los casos alternando bandas
+hasta juntar un piso por banda. La banda se mide con los mismos cortes del motor
+y de la vista: ALTA `>= 0.85`, MEDIA `>= 0.60`, BAJA `< 0.60`.
+
+```powershell
+# Contra local (API en 5000, motor en 8000). Credenciales por entorno.
+$env:SEED_USER="admin"; $env:SEED_PASS="<clave>"
+npm run seed                       # 48 diagnosticos (por defecto)
+node scripts/seed-diagnosticos.mjs --cantidad 40
+```
+
+Contra un servidor remoto hay que decir la URL con el flag explicito, porque el
+script **escribe** y apuntar por accidente a produccion sembraria datos ajenos:
+
+```powershell
+$env:SEED_USER="..."; $env:SEED_PASS="..."; node scripts/seed-diagnosticos.mjs --url https://<host>
+```
+
+Sin `--url`, un destino que no sea `localhost`/`127.0.0.1`/`::1` se rechaza antes
+de tocar la red. La URL tambien se puede pasar por `SEED_API_URL` (sigue exigiendo
+`--url` si no es local). El destino por defecto es `http://127.0.0.1:5000`.
+
+La API corta con 429 a las 300 peticiones / 15 min, y cada inferencia y cada
+guardado cuentan: el script acota su presupuesto de intentos (tope 200) para no
+agotar el cupo de una corrida desplegada. Reejecutarlo **solo agrega**: no borra
+lo sembrado antes ni detecta duplicados; para limpiar, borre los documentos con
+`origen: "semilla"` desde MongoDB. Si su `RATE_LIMIT_MAX` es menor que el
+presupuesto, baje `--cantidad` o suba el cupo.
+
 ### Variables de entorno
 
 | Variable | Por defecto | Para que sirve |
