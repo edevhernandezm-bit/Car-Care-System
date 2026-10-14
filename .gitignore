@@ -31,3 +31,6 @@ skills-lock.json
 # Estado del despliegue en la nube (IDs y nombres NO secretos).
 # Los secretos viven en SSM Parameter Store, nunca en el repositorio.
 .cloud-state.json
+
+# Resultados de load-test
+scripts/resultados/
