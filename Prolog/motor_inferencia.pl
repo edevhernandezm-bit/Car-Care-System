@@ -57,6 +57,7 @@
 % devolverlas en el diagnóstico. La base estática no las modela, así que se
 % degradan a lista vacía al construir el diccionario.
 :- dynamic causa_falla/2.
+:- dynamic observaciones_falla/2.
 
 :- use_module(library(lists)).
 
@@ -1469,6 +1470,7 @@ falla_a_dict(Disparos, Certeza-Falla, Dict) :-
     % Las causas las declaran las fallas de usuario; la base estatica no las
     % modela, asi que degradan a lista vacia en vez de romper el diagnostico.
     (   causa_falla(Falla, Causas) -> true ; Causas = [] ),
+    (   observaciones_falla(Falla, Obs) -> true ; Obs = '' ),
     Dict = _{
         id: Falla,
         nombre: Nombre,
@@ -1481,7 +1483,8 @@ falla_a_dict(Disparos, Certeza-Falla, Dict) :-
         sintomas_relacionados: Respaldo,
         causas: Causas,
         fuente: Fuente,
-        confianza_dato: CD
+        confianza_dato: CD,
+        observaciones: Obs
     }.
 
 reparacion_a_nombre(R, Nombre) :-
@@ -1528,6 +1531,14 @@ procesar_fallas(_Request) :-
 % CRUD FALLAS DINÁMICAS + BOOTSTRAP
 % ==========================================
 
+% Toda mutacion del catalogo toma el MISMO mutex que el diagnostico. El
+% diagnostico enumera `falla/2` mientras infiere; si un POST, un PUT, un DELETE o
+% un bootstrap afirmara o retrayera clausulas a mitad de esa enumeracion, el
+% resultado saldria armado con dos versiones del catalogo a la vez. Con el mutex
+% compartido las dos operaciones se serializan y cada diagnostico ve una sola
+% version. El `once/1` no es decorativo: `with_mutex/2` suelta el cerrojo al
+% terminar, pero si el objetivo deja puntos de eleccion lo conserva hasta el
+% backtracking, y aqui no hay ninguno que los consuma.
 procesar_fallas_dinamicas(Request) :-
     option(method(options), Request),
     !,
@@ -1544,7 +1555,7 @@ procesar_fallas_dinamicas(Request) :-
     !,
     cors_enable,
     http_read_json_dict(Request, DictIn),
-    procesar_falla_crear(DictIn, Resp),
+    with_mutex(diagnostico_mutex, once(procesar_falla_crear(DictIn, Resp))),
     reply_json_dict(Resp).
 
 procesar_fallas_dinamicas(Request) :-
@@ -1559,7 +1570,7 @@ procesar_fallas_dinamicas(Request) :-
         % al dict, el cuerpo podría traer otro prologId y la falla se escribiría
         % bajo un functor distinto del que se pidió editar.
         put_dict(prologId, DictIn, QId, DictConId),
-        procesar_falla_crear(DictConId, Resp),
+        with_mutex(diagnostico_mutex, once(procesar_falla_crear(DictConId, Resp))),
         reply_json_dict(Resp)
     ).
 
@@ -1570,9 +1581,16 @@ procesar_fallas_dinamicas(Request) :-
     prolog_id_de_query(Request, QId),
     (   QId == sin_prolog_id
     ->  reply_json_dict(_{error:'prologId requerido'}, [status(400)])
-    ;   (   falla_usuario(QId)
-        ->  retractar_falla_dinamica(QId),
-            reply_json_dict(_{status:'success', action:'retracted'})
+    ;   % La decision de si existia se toma DENTRO del mutex: preguntarla fuera
+        % dejaria una ventana en la que otro borrado o el bootstrap la retracta
+        % entre el `falla_usuario/1` y el `retractar_falla_dinamica/1`.
+        with_mutex(diagnostico_mutex,
+                   once(( falla_usuario(QId)
+                        -> retractar_falla_dinamica(QId), Borrada = true
+                        ;  Borrada = false
+                        ))),
+        (   Borrada == true
+        ->  reply_json_dict(_{status:'success', action:'retracted'})
         ;   reply_json_dict(_{status:'not_found'}, [status(404)])
         )
     ).
@@ -1604,8 +1622,11 @@ procesar_bootstrap_fallas(Request) :-
     cors_enable,
     http_read_json_dict(Request, DictIn),
     (   get_dict(fallas, DictIn, FallasList), is_list(FallasList)
-    ->  limpiar_dinamicas_usuario,
-        procesar_lote_fallas(FallasList, 0, N),
+    ->  % El borrado global y la recarga entran juntos en el mutex: si se
+        % partieran, un diagnostico podria correr entre las dos y ver el catalogo
+        % vaciado, que es justo el estado que el bootstrap viene a reemplazar.
+        with_mutex(diagnostico_mutex,
+                   once(( limpiar_dinamicas_usuario, procesar_lote_fallas(FallasList, 0, N) ))),
         reply_json_dict(_{status:'success', count:N})
     ;   reply_json_dict(_{error:'fallas[] requerido'}, [status(400)])
     ).
@@ -1741,6 +1762,10 @@ crear_falla_dinamica(DictIn, Resp) :-
     ->  CertezaBase = CB
     ;   CertezaBase = 0.7
     ),
+    (   get_dict(observaciones, DictIn, ObsIn)
+    ->  (   string(ObsIn) -> Obs = ObsIn ; term_string(ObsIn, Obs) )
+    ;   Obs = ''
+    ),
     (   falla_usuario(PrologId)
     ->  retractar_falla_dinamica(PrologId)
     ;   true
@@ -1764,6 +1789,7 @@ crear_falla_dinamica(DictIn, Resp) :-
     assertz(confianza_dato(PrologId, CDAtom)),
     assertz(explicacion(PrologId)),
     assertz(falla_usuario(PrologId)),
+    (   Obs == '' -> true ; assertz(observaciones_falla(PrologId, Obs)) ),
     Resp = _{status:'success', prologId:PrologId}.
 
 % Normaliza un nombre al `prologId` que usa el resto del sistema. Replica
@@ -1911,6 +1937,7 @@ falla_meta_a_dict(F, Dict) :-
     (   fuente_falla(F, Fuente) -> true
     ;   Fuente = 'Base original del sistema (sin fuente registrada)' ),
     (   confianza_dato(F, CD) -> true ; CD = no_registrada ),
+    (   observaciones_falla(F, Obs) -> true ; Obs = '' ),
     Dict = _{
         id: F,
         nombre: N,
@@ -1920,7 +1947,8 @@ falla_meta_a_dict(F, Dict) :-
         moneda: Moneda,
         reparaciones: RepNombres,
         fuente: Fuente,
-        confianza_dato: CD
+        confianza_dato: CD,
+        observaciones: Obs
     }.
 
 % NUEVO endpoint (aditivo): historial de diagnosticos en memoria.
@@ -1968,6 +1996,7 @@ retractar_falla_dinamica(F) :-
     retractall(causa_falla(F,_)),
     retractall(aplica_a(F,_,_,_,_)),
     retractall(falla_usuario(F)),
+    retractall(observaciones_falla(F,_)),
     maplist(retractar_sintoma_huerfano, SintomasDeLaFalla).
 
 % Un síntoma de usuario que ninguna falla viva (estática o dinámica) referencia

@@ -28,9 +28,26 @@ const PROLOG_TIMEOUT_MS = Number(process.env.PROLOG_TIMEOUT_MS) || 3000;
 // que no lo traiga (salvo su preflight), porque su CRUD no exige nada por si
 // mismo: sin esto, quien alcance el puerto del motor vacia el catalogo. Debe ser
 // hexadecimal (SWI lee el valor de la cabecera como termino Prolog) y el mismo
-// en los dos contenedores. El valor por defecto solo cubre el desarrollo local.
-const MOTOR_TOKEN = process.env.MOTOR_TOKEN || 'decafbaddecafbad';
-const CABECERAS_MOTOR = { 'Content-Type': 'application/json', 'X-Motor-Token': MOTOR_TOKEN };
+// en los dos contenedores.
+//
+// Sin valor configurado no se manda la cabecera, y eso solo funciona contra un
+// motor abierto, que es el del desarrollo local.
+const MOTOR_TOKEN = process.env.MOTOR_TOKEN;
+
+// En produccion no hay token por defecto: uno escrito en el repositorio lo lee
+// cualquiera y no protege nada, asi que el arranque falla en vez de salir a hablar
+// con el motor sin autenticacion.
+if (process.env.NODE_ENV === 'production' && !MOTOR_TOKEN) {
+  console.error(
+    '[config] Falta MOTOR_TOKEN. Sin el la API no puede autenticarse ante el motor: definelo en el entorno.'
+  );
+  process.exit(1);
+}
+
+const CABECERAS_MOTOR = MOTOR_TOKEN
+  ? { 'Content-Type': 'application/json', 'X-Motor-Token': MOTOR_TOKEN }
+  : { 'Content-Type': 'application/json' };
+
 // Allowlist de origenes. Acepta una lista separada por comas: CORS_ORIGIN=*
 // habilita cualquier origen (util solo en desarrollo).
 const CORS_ORIGENES = (process.env.CORS_ORIGIN || 'http://localhost:5173')
@@ -321,8 +338,29 @@ async function alinearIndicePrologId() {
 // Prolog limpia primero las dinamicas de usuario y afirma el lote completo, asi
 // que las fallas borradas en Mongo desaparecen tambien del motor sin que nadie
 // tenga que acordarse de retractar una por una.
+async function esperarMotor() {
+  let espera = 500;
+  for (let intento = 1; intento <= 4; intento += 1) {
+    try {
+      const r = await fetch(`${PROLOG_BASE}/health`, { signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS) });
+      if (r.ok) return true;
+    } catch {
+      // Todavia no escucha; se reintenta.
+    }
+    if (intento < 4) {
+      await new Promise((resolve) => { setTimeout(resolve, espera); });
+      espera *= 2;
+    }
+  }
+  return false;
+}
+
 async function bootstrapFallasDinamicas() {
   try {
+    if (!(await esperarMotor())) {
+      console.error('[bootstrap] El motor no respondio su sonda: no se cargaron las fallas dinamicas.');
+      return;
+    }
     const activas = await Falla.find({ activo: true, deletedAt: null }).lean();
     // Se llama al endpoint tambien con el lote vacio, y el motivo es el
     // retract: si aqui se salia con un `return` temprano, un arranque en el que

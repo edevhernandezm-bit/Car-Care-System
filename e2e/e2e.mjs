@@ -30,9 +30,9 @@ const API_URL = `http://localhost:${PUERTO_API}`;
 const WEB_URL = `http://localhost:${PUERTO_WEB}`;
 const PROLOG_URL = `http://localhost:${PUERTO_PROLOG}/api/diagnostico`;
 // El motor exige esta cabecera en todas sus rutas menos el preflight. El valor
-// es distinto del de desarrollo a proposito: si el backend no leyera
-// MOTOR_TOKEN y se quedara con el default, las pruebas fallarian con 401 en vez
-// de pasar, y el fallo seria invisible.
+// es distinto del de cualquier despliegue a proposito: si el backend no leyera
+// MOTOR_TOKEN no mandaria la cabecera y las pruebas fallarian con 401 en vez
+// de pasar.
 const MOTOR_TOKEN_E2E = 'e2e0e2e0e2e0e2e0';
 const CH_MOTOR = { 'X-Motor-Token': MOTOR_TOKEN_E2E };
 

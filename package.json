@@ -8,5 +8,8 @@
     "test:e2e": "npm --prefix backend test",
     "build": "npm --prefix frontend run build",
     "smoke": "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test.ps1"
+  },
+  "dependencies": {
+    "autocannon": "^7.15.0"
   }
 }

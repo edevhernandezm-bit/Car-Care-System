@@ -135,7 +135,7 @@ npm test
 | `SESSION_SECRET` | valor de desarrollo | Frase que firma las cookies de sesion. **En produccion es obligatoria**: sin ella la API no arranca |
 | `TRUST_PROXY_HOPS` | `2` | Proxies delante de la API (CloudFront y el ALB). Sin declararlos, `req.ip` seria la IP interna del ALB |
 | `ORIGIN_VERIFY` | — | Cabecera secreta que inyecta CloudFront. Sin definirla no se exige (local); definida, quien no la traiga recibe 403 |
-| `MOTOR_TOKEN` | valor de desarrollo | Token hexadecimal compartido con el motor. Si el motor no lo define, arranca abierto y lo avisa por stderr |
+| `MOTOR_TOKEN` | — | Token hexadecimal compartido con el motor. Si el motor no lo define, arranca abierto y lo avisa por stderr. **En produccion es obligatoria**: sin ella la API no arranca. |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | Ventana del limite de peticiones (15 min) |
 | `RATE_LIMIT_MAX` | `300` | Peticiones por ventana e IP para toda la API |
 | `LOGIN_RATE_LIMIT_MAX` | `20` | Intentos de login fallidos por ventana y por `(IP, usuario)` |
