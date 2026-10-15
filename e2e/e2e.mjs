@@ -632,6 +632,13 @@ test('09c | Gateway Prolog: el navegador llega al motor por el proxy de Vite →
 test('09d | Gateway Prolog: 502 cuando el motor no responde, sin filtrar el error interno', async () => {
   // PROLOG_BASE se lee al arrancar el proceso, asi que para probar la rama de
   // error hay que levantar una segunda instancia apuntando a un puerto muerto.
+  // Se reserva y se suelta un puerto efimero: asi el fallo es un ECONNREFUSED
+  // real, con codigo de red en el log, sin depender de que un numero fijo libre.
+  const sonda = crearServidorHttp();
+  await new Promise((r) => sonda.listen(0, '127.0.0.1', r));
+  const puertoCerrado = sonda.address().port;
+  await new Promise((r) => sonda.close(r));
+
   const puertoMuerto = PUERTO_API + 7;
   const proc = spawn(process.execPath, ['server.js'], {
     cwd: BACKEND_DIR,
@@ -639,7 +646,8 @@ test('09d | Gateway Prolog: 502 cuando el motor no responde, sin filtrar el erro
       ...process.env,
       PORT: String(puertoMuerto),
       MONGO_URI: TEST_DB,
-      PROLOG_BASE: 'http://127.0.0.1:9',
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      PROLOG_BASE: `http://127.0.0.1:${puertoCerrado}`,
       PROLOG_TIMEOUT_MS: '400',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -659,12 +667,27 @@ test('09d | Gateway Prolog: 502 cuando el motor no responde, sin filtrar el erro
     assert.equal(res.status, 502, 'sin motor detras, el gateway debe responder 502');
 
     const cuerpo = await res.json();
-    assert.equal(cuerpo.error, 'Error interno del servidor', 'el 502 no debe filtrar el error real de fetch');
+    assert.equal(
+      cuerpo.error,
+      'Motor de inferencia no disponible',
+      'el 502 (cayeron todas las replicas) debe distinguirse del 500'
+    );
     assert.doesNotMatch(
       JSON.stringify(cuerpo),
-      /ECONNREFUSED|127\.0\.0\.1:9|fetch failed|at /,
+      new RegExp(`ECONNREFUSED|127\\.0\\.0\\.1:${puertoCerrado}|fetch failed|at `),
       'no debe filtrarse el destino ni el detalle del error de red'
     );
+
+    // El log del manejador central si distingue: etiqueta el estado y anota la
+    // causa de red (codigo incluido), y nunca el token del motor.
+    await sleep(150);
+    const registro = readFileSync(logPath('api-sin-motor.err'), 'utf8');
+    assert.match(
+      registro,
+      /\[error 502\][^\n]*ECONNREFUSED/,
+      'el log registra el estado 502 y el codigo de red de la causa'
+    );
+    assert.doesNotMatch(registro, new RegExp(MOTOR_TOKEN_E2E), 'el log no debe filtrar el token del motor');
   } finally {
     if (proc.pid) matarArbol(proc.pid);
   }
@@ -2808,5 +2831,105 @@ test('37 | Producción sin MOTOR_TOKEN: ni el motor ni la API arrancan', async (
     await sondeo(`http://localhost:${puertoApi}/api/config/tipo-cambio`, { timeout: 60000 });
   } finally {
     if (apiConToken.pid) matarArbol(apiConToken.pid);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2.4 Un corte a mitad de la respuesta reintenta en la otra réplica
+// ---------------------------------------------------------------------------
+
+test('38 | Gateway multi-réplica: un corte a mitad de la respuesta reintenta en la otra, no da 500', async () => {
+  // Réplica de bolsillo que pasa la sonda de arranque (para que el reparto la
+  // elija) pero, al diagnosticar, manda las cabeceras y corta el socket sin
+  // terminar el cuerpo. `fetch` resuelve en cuanto llegan las cabeceras: si el
+  // gateway lee el cuerpo FUERA del bucle de reintento, el corte se escapa como
+  // 500 aunque la otra replica este viva. Este test lo fija.
+  const puertoFalsa = PUERTO_PROLOG + 5;
+  const puertoApi = PUERTO_API + 20;
+  const hits = { diagnostico: 0 };
+  const falsa = crearServidorHttp((req, res) => {
+    req.on('data', () => {});
+    req.on('end', () => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        return res.end('ok');
+      }
+      if (req.url === '/api/fallas/bootstrap') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end('{"ok":true}');
+      }
+      if (req.url === '/api/diagnostico') {
+        hits.diagnostico += 1;
+        // Cabeceras completas y cuerpo truncado: Content-Length promete mas de lo
+        // que se manda y el socket se cierra. Es el corte a mitad de respuesta.
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '1000' });
+        res.write('{"fallas":[');
+        setTimeout(() => res.socket.destroy(), 20);
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    });
+  });
+  await new Promise((r) => falsa.listen(puertoFalsa, r));
+
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: {
+      ...process.env,
+      PORT: String(puertoApi),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      // La que corta va PRIMERO: el cursor arranca ahi, asi que el primer
+      // diagnostico cae en ella y es el que dispara el reintento.
+      PROLOG_BASES: `http://localhost:${puertoFalsa},http://localhost:${PUERTO_PROLOG}`,
+      PROLOG_TIMEOUT_MS: '400',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-corta.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-corta.err'), 'w') }));
+
+  try {
+    const base = `http://localhost:${puertoApi}`;
+    await sondeo(`${base}/api/config/tipo-cambio`, { timeout: 60000 });
+    const cookie = await sesionGateway();
+
+    const primera = await peticionGateway(base, '/api/prolog/api/diagnostico', {
+      method: 'POST',
+      cookie,
+      body: { marca: 'gen', modelo: 'gen', anio: 0, sintomas: [] },
+    });
+    assert.equal(
+      primera.status,
+      200,
+      'el corte a mitad de respuesta debe reintentar en la otra replica, no dar 500/502'
+    );
+    const cuerpo = await primera.json();
+    assert.ok(Array.isArray(cuerpo.fallas), 'la respuesta la da el motor vivo, no el gateway');
+    assert.ok(hits.diagnostico >= 1, 'la replica que corta debe haber recibido el primer intento');
+
+    // Queda fuera del reparto (cooldown): la siguiente ya no la toca.
+    const antes = hits.diagnostico;
+    const segunda = await peticionGateway(base, '/api/prolog/api/diagnostico', {
+      method: 'POST',
+      cookie,
+      body: { marca: 'gen', modelo: 'gen', anio: 0, sintomas: [] },
+    });
+    assert.equal(segunda.status, 200);
+    assert.equal(hits.diagnostico, antes, 'la replica que corto sale del reparto');
+
+    // El failover deja su causa en el log (codigo de socket incluido), sin el
+    // token del motor: es lo que permite distinguir esto de un 500 real.
+    await sleep(150);
+    const registro = readFileSync(logPath('api-corta.err'), 'utf8');
+    assert.match(registro, /UND_ERR_SOCKET|terminated/, 'el log registra la causa de red del corte');
+    assert.doesNotMatch(registro, new RegExp(MOTOR_TOKEN_E2E), 'el log no debe filtrar el token del motor');
+
+    const salud = await (await fetch(`${base}/health`)).json();
+    assert.equal(salud.motores.sanos, 1, 'solo queda sana la replica que respondio');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+    await new Promise((r) => falsa.close(r));
   }
 });

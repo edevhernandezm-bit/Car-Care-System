@@ -131,7 +131,7 @@ function marcarReplicaCaida(base, err) {
   tocarEstado(base, { fallandoHasta: Date.now() + PROLOG_REPLICA_COOLDOWN_MS });
   programarResync(base);
   console.warn(
-    `[prolog] Replica ${base} no respondio (${err && (err.name || err.message)}); fuera ${PROLOG_REPLICA_COOLDOWN_MS} ms`
+    `[prolog] Replica ${base} no respondio (${resumenError(err)}); fuera ${PROLOG_REPLICA_COOLDOWN_MS} ms`
   );
 }
 
@@ -195,9 +195,51 @@ async function resincronizarReplica(base) {
   }
 }
 
-// Envia una peticion al cluster. Ante un fallo de RED o de timeout prueba la
+// Errores que cuentan como "replica caida": los de red o de conexion, en
+// cualquiera de las capas que anida Node/undici. Hay que mirar nombre, codigo Y
+// mensaje porque undici no siempre rellena el codigo: un `TypeError: fetch failed`
+// pelado con `cause: ECONNRESET` en la capa de abajo, o un "terminated" al leer un
+// cuerpo cortado. Un fallo del programa no entra aqui y sigue saliendo como 500.
+const CODIGOS_RED = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH',
+  'ENOTFOUND', 'EAI_AGAIN', 'ERR_SOCKET_CONNECTION_TIMEOUT',
+  'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT', 'UND_ERR_ABORTED', 'UND_ERR_CLOSED',
+]);
+const TEXTOS_RED = ['fetch failed', 'terminated', 'other side closed', 'socket hang up', 'aborted'];
+
+function esFalloDeRed(err) {
+  for (let e = err; e; e = e.cause) {
+    if (e.name === 'AbortError' || e.name === 'TimeoutError') return true;
+    if (e.code && CODIGOS_RED.has(e.code)) return true;
+    const mensaje = String(e.message || '');
+    if (TEXTOS_RED.some((t) => mensaje.includes(t))) return true;
+  }
+  return false;
+}
+
+// Resumen del error para el log: nombre, codigo y mensaje de cada capa de la
+// cadena de `cause`, nunca el objeto entero (puede arrastrar la peticion con la
+// cabecera del token del motor). Sirve para distinguir un 502 (cluster caido) de
+// un 500 real sin filtrar nada al cliente.
+function resumenError(err) {
+  const capas = [];
+  for (let e = err; e; e = e.cause) {
+    capas.push([e.name, e.code, e.message].filter(Boolean).join(' '));
+  }
+  return capas.join(' <- ');
+}
+
+// Envia una peticion al cluster. Ante un fallo de red o de timeout prueba la
 // siguiente replica; una respuesta HTTP (aunque sea 5xx) se devuelve tal cual,
 // porque ya es una respuesta real del motor. El timeout es por intento, no global.
+//
+// El CUERPO se lee aqui dentro, en el mismo intento: `fetch` resuelve en cuanto
+// llegan las cabeceras, asi que un corte a mitad de respuesta (undici:
+// "terminated" / UND_ERR_SOCKET) reventaria al leerlo FUERA del bucle y acabaria
+// en 500 aunque quedaran replicas vivas. Solo pasa por aqui lo seguro de
+// reintentar (inferencia y lecturas); las mutaciones del catalogo, que no deben
+// repetirse a ciegas, van por difundirAReplicas y no reintentan.
 async function pedirAMotor(ruta, init) {
   let ultimoError;
   for (const base of ordenReplicas()) {
@@ -205,18 +247,19 @@ async function pedirAMotor(ruta, init) {
     const timeout = setTimeout(() => controller.abort(), PROLOG_TIMEOUT_MS);
     try {
       const respuesta = await fetch(`${base}${ruta}`, { ...init, signal: controller.signal });
+      const cuerpo = await respuesta.text();
       marcarReplicaViva(base);
-      return { respuesta, base };
+      return { respuesta, cuerpo, base };
     } catch (err) {
+      if (!esFalloDeRed(err)) throw err;
       ultimoError = err;
       marcarReplicaCaida(base, err);
     } finally {
       clearTimeout(timeout);
     }
   }
-  throw Object.assign(new Error('No se pudo contactar al motor Prolog'), {
+  throw Object.assign(new Error('No se pudo contactar al motor Prolog', { cause: ultimoError }), {
     status: 502,
-    causa: ultimoError,
   });
 }
 
@@ -733,11 +776,11 @@ app.use('/api/prolog', autorizarGatewayProlog, async (req, res, next) => {
     // Las rutas del gateway son seguras de reintentar en otra replica (lecturas
     // de catalogo y la inferencia, que no muta el catalogo); la escritura del
     // catalogo NO pasa por aqui, va por /api/fallas, que difunde sin reintentar.
-    const { respuesta, base } = await pedirAMotor(req.url, init);
+    const { respuesta, cuerpo, base } = await pedirAMotor(req.url, init);
 
     res.status(respuesta.status);
     res.setHeader('Content-Type', respuesta.headers.get('content-type') || 'application/json');
-    res.send(await respuesta.text());
+    res.send(cuerpo);
 
     // Con varias replicas importa saber cual atendio. Con una sola seria ruido en
     // cada peticion.
@@ -1681,8 +1724,15 @@ app.use((err, _req, res, _next) => {
 
   const status = err.status || 500;
   if (status >= 500) {
-    console.error(`[error ${status}]`, err);
-    return res.status(status).json({ error: 'Error interno del servidor' });
+    // Estado y causa de red al log (nombre, codigo de socket y mensaje de cada
+    // capa de `cause`), nunca el objeto entero: puede arrastrar la peticion con
+    // la cabecera del token del motor. Asi un 502 de "cayeron todas las
+    // replicas" se distingue de un 500 real. El cliente recibe un mensaje
+    // distinto para cada uno, tambien sin detalle interno.
+    console.error(`[error ${status}] ${resumenError(err)}`);
+    return res.status(status).json({
+      error: status === 502 ? 'Motor de inferencia no disponible' : 'Error interno del servidor',
+    });
   }
   return res.status(status).json({ error: err.message || 'Solicitud inválida' });
 });
