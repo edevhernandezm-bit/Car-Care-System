@@ -1306,6 +1306,15 @@ token_motor(Token) :-
     Valor \== '',
     Token = Valor.
 
+% En produccion (NODE_ENV=production) el motor no puede quedar abierto: sin token,
+% cualquiera que alcance su puerto vacia el catalogo (DELETE /api/fallas) o lo
+% sobreescribe (bootstrap). En local sigue abierto para no obligar a definir la
+% variable en cada prueba; el aviso de abajo deja constancia de ese estado.
+ambiente_produccion :-
+    catch(getenv('NODE_ENV', Valor), _, fail),
+    Valor \== '',
+    atom_string(Valor, "production").
+
 % La cabecera llega como atomo (y el valor de getenv tambien puede ser string o
 % atomo, segun la version): se normalizan los dos lados antes de comparar. El
 % guardia atomic/1 corta el caso en que el cliente mande algo que SWI no lea como
@@ -1372,12 +1381,18 @@ server(Puerto) :-
         halt(1)
     ;   true
     ),
-    catch(validar_kb(N), E, ( format('[!] No se pudo validar la KB: ~w~n', [E]), N = -1 )),
     (   token_motor(_)
     ->  true
+    ;   ambiente_produccion
+    ->  format(user_error, '[!] MOTOR_TOKEN no esta definido y NODE_ENV=production:~n', []),
+        format(user_error, '[!] sin token cualquier peticion que alcance el puerto~n', []),
+        format(user_error, '[!] del motor puede vaciar el catalogo. Define~n', []),
+        format(user_error, '[!] MOTOR_TOKEN en el entorno; no se arranca sin el.~n', []),
+        halt(1)
     ;   format(user_error, '[!] MOTOR_TOKEN no esta definido: el motor acepta~n', []),
         format(user_error, '[!] peticiones SIN token. Definelo en produccion.~n~n', [])
     ),
+    catch(validar_kb(N), E, ( format('[!] No se pudo validar la KB: ~w~n', [E]), N = -1 )),
     http_server(http_dispatch, [port(Puerto)]),
     format('~n[+] Servidor Prolog corriendo exitosamente en http://localhost:~w/~n', [Puerto]),
     (   N =:= 0

@@ -2763,3 +2763,72 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada no atiende hast
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// 2.4 Sin MOTOR_TOKEN no se arranca en producción
+// ---------------------------------------------------------------------------
+
+test('37 | Producción sin MOTOR_TOKEN: ni el motor ni la API arrancan', async () => {
+  // Motor: sin token y con NODE_ENV=production, server/1 aborta antes de servir.
+  const puertoMotor = PUERTO_PROLOG + 4;
+  const entornoMotor = { ...process.env, NODE_ENV: 'production', PORT: String(puertoMotor) };
+  delete entornoMotor.MOTOR_TOKEN;
+  const motorSinToken = spawn(SWIPL, ['-q', '-f', PL_FILE, '-g', `server(${puertoMotor})`, '-t', 'halt'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: entornoMotor,
+  });
+  let errorMotor = '';
+  motorSinToken.stderr.on('data', (d) => { errorMotor += d.toString(); });
+  const codigoMotor = await new Promise((r) => motorSinToken.on('exit', (c) => r(c)));
+  assert.notEqual(codigoMotor, 0, 'el motor en producción sin token debe salir con error');
+  assert.match(errorMotor, /MOTOR_TOKEN/, 'el motor debe explicar por qué no arranca');
+
+  // El mismo motor CON token sí arranca: la condición es el token, no producción.
+  const motorConToken = spawn(SWIPL, ['-q', '-f', PL_FILE, '-g', `server(${puertoMotor}), sleep(3600)`, '-t', 'halt'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, NODE_ENV: 'production', PORT: String(puertoMotor), MOTOR_TOKEN: MOTOR_TOKEN_E2E },
+  });
+  motorConToken.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('motor-prod.out'), 'w') }));
+  motorConToken.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('motor-prod.err'), 'w') }));
+  try {
+    await sondeo(`http://localhost:${puertoMotor}/health`, { timeout: 60000 });
+  } finally {
+    if (motorConToken.pid) matarArbol(motorConToken.pid);
+  }
+
+  // API: sin token y con NODE_ENV=production, el arranque falla.
+  const puertoApi = PUERTO_API + 19;
+  const entornoApi = { ...process.env, NODE_ENV: 'production', PORT: String(puertoApi), MONGO_URI: TEST_DB };
+  delete entornoApi.MOTOR_TOKEN;
+  const apiSinToken = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: entornoApi,
+  });
+  let errorApi = '';
+  apiSinToken.stderr.on('data', (d) => { errorApi += d.toString(); });
+  const codigoApi = await new Promise((r) => apiSinToken.on('exit', (c) => r(c)));
+  assert.notEqual(codigoApi, 0, 'la API en producción sin token debe salir con error');
+  assert.match(errorApi, /MOTOR_TOKEN/, 'la API debe explicar por qué no arranca');
+
+  // Con MOTOR_TOKEN (y SESSION_SECRET, que producción también exige) sí arranca.
+  const apiConToken = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      PORT: String(puertoApi),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      SESSION_SECRET: 'secreto-produccion-e2e',
+    },
+  });
+  apiConToken.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-prod.out'), 'w') }));
+  apiConToken.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-prod.err'), 'w') }));
+  try {
+    await sondeo(`http://localhost:${puertoApi}/api/config/tipo-cambio`, { timeout: 60000 });
+  } finally {
+    if (apiConToken.pid) matarArbol(apiConToken.pid);
+  }
+});
