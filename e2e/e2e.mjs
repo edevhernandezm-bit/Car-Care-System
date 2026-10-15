@@ -2073,13 +2073,13 @@ test('28 | Motor Prolog: mutex compartido — alta, bootstrap, baja y diagnósti
   // Un DELETE puede perder la carrera contra otro DELETE o contra el bootstrap
   // que limpia las dinámicas, y eso es legítimo: 404 = ya no estaba.
   //
-  // Una sola pasada: repetir la tormenta en bucle (se probaron diez rondas)
-  // satura el servidor HTTP de Prolog y hace fallar por reinicio de conexión no
-  // solo a esta prueba sino a las siguientes que comparten el motor. La
-  // estabilidad de la carrera se confirmo corriendo ESTE test diez veces, no
-  // anidando diez tormentas dentro de una.
+  // Diez rondas: la tormenta completa (60 operaciones concurrentes) repetida.
+  // Con el pool HTTP fijo de 5 hilos esto saturaba el servidor (latencia en
+  // escalones de 2 s / 4 s que hacia fallar por reinicio de conexion; ver
+  // "Dimensionamiento del motor" en el README). Con http_dyn_workers y
+  // keep_alive_timeout bajo, diez rondas pasan estables.
   const ACEPTADOS = new Set([200, 201, 404]);
-  for (let ronda = 1; ronda <= 1; ronda++) {
+  for (let ronda = 1; ronda <= 10; ronda++) {
     const operaciones = [];
     for (let i = 0; i < 6; i++) {
       operaciones.push(crear('mutex_a_e2e', sintomaCompartido));

@@ -1248,6 +1248,11 @@ inicio :-
 :- use_module(library(http/http_dispatch)).
 :- use_module(library(http/http_json)).
 :- use_module(library(http/http_cors)).
+% `library(http/http_dyn_workers)` engancha `http:schedule_workers/1` para que el
+% pool crezca solo cuando la cola de aceptacion se llena (hasta http:max_workers,
+% 100 por defecto). Sin el, el pool se queda en el `workers(N)` fijo y una rafaga
+% de mas conexiones que hilos espera a que uno se libere.
+:- use_module(library(http/http_dyn_workers)).
 % `library(http/http_parameters)` aporta `http_parameters/2`, que lee los
 % parametros de la query y del cuerpo de un PUT/DELETE. No basta con
 % `thread_httpd`: los handlers se ejecutan en el modulo `user` y, sin este
@@ -1357,6 +1362,23 @@ puerto_ocupado(Puerto) :-
     catch(tcp_close_socket(S), _, true),
     Resultado == ocupado.
 
+% Lee un entero del entorno, con valor por defecto si falta o no es un numero.
+% Se usa para el tamaño del pool HTTP (MOTOR_WORKERS) y el tiempo de vida de las
+% conexiones keep-alive (MOTOR_KEEPALIVE_S); asi el contenedor los ajusta sin
+% tocar codigo. Los defaults salen del barrido de concurrencia del README
+% ("Dimensionamiento del motor"): con workers=5 y keep_alive_timeout=2 las
+% rafagas de mas de 5 conexiones se encontraban el hueco de 2 s de las
+% conexiones keep-alive aparcadas.
+entero_entorno(Nombre, _Defecto, Valor) :-
+    catch(getenv(Nombre, Texto0), _, fail),
+    Texto0 \== '',
+    atom_string(Texto0, Texto),
+    catch(number_string(V, Texto), _, fail),
+    integer(V),
+    !,
+    Valor = V.
+entero_entorno(_, Defecto, Defecto).
+
 % Comando para arrancar el servidor. El puerto lo puede fijar el contenedor con
 % PORT; sin la variable queda el 8000 de siempre, que es el que usan los scripts
 % locales. server/1 sigue disponible para forzar otro puerto a mano.
@@ -1393,8 +1415,14 @@ server(Puerto) :-
         format(user_error, '[!] peticiones SIN token. Definelo en produccion.~n~n', [])
     ),
     catch(validar_kb(N), E, ( format('[!] No se pudo validar la KB: ~w~n', [E]), N = -1 )),
-    http_server(http_dispatch, [port(Puerto)]),
+    entero_entorno('MOTOR_WORKERS', 16, Workers),
+    entero_entorno('MOTOR_KEEPALIVE_S', 1, KeepAlive),
+    http_server(http_dispatch, [ port(Puerto),
+                                 workers(Workers),
+                                 keep_alive_timeout(KeepAlive)
+                               ]),
     format('~n[+] Servidor Prolog corriendo exitosamente en http://localhost:~w/~n', [Puerto]),
+    format('[+] Pool HTTP: workers=~w, keep_alive_timeout=~ws.~n', [Workers, KeepAlive]),
     (   N =:= 0
     ->  writeln('[+] Base de conocimiento validada sin alertas.')
     ;   format('[!] Validacion de la KB: ~w alerta(s) (ver arriba).~n', [N]) ),

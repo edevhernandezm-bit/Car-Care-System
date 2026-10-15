@@ -149,6 +149,47 @@ motor, arranque la API con `PROLOG_BASES=http://localhost:8000,http://localhost:
 y una segunda instancia del motor en el 8001. El script se niega a correr contra
 un host remoto salvo que se pase `--permitir-remoto`.
 
+### Dimensionamiento del motor
+
+El motor atiende con un pool de hilos HTTP. SWI usa 5 hilos por defecto y espera
+2 s antes de cerrar una conexion keep-alive ociosa. Con mas conexiones vivas que
+hilos, las que no caben esperan a que uno se libere; y un hilo aparcado en una
+conexion keep-alive no se suelta hasta agotar esos 2 s, asi que la latencia sube
+en escalones de ~2 s (4 s si hay dos rondas de espera). Eso hacia fallar por
+reinicio de conexion la tormenta del test 28 y el 502 por timeout del test 29.
+
+Se corrige cargando `library(http/http_dyn_workers)` (el pool crece solo cuando
+la cola de aceptacion se llena, hasta 100 hilos) y ajustando `workers` y
+`keep_alive_timeout` por entorno: `MOTOR_WORKERS` (16 por defecto) y
+`MOTOR_KEEPALIVE_S` (1 por defecto).
+
+Barrido de concurrencia: una rafaga limpia de N peticiones concurrentes a
+`/health`, de 5 a 64, con 3 s entre rafagas para dejar vencer los parkings
+keep-alive. Total en ms de cada rafaga (0 errores en las tres columnas):
+
+| concurrentes | BEFORE (workers=5, keep_alive=2) | dyn_workers solo (5, 2) | AFTER (16, 1) |
+|---|---|---|---|
+| 5 | 10 | 10 | 11 |
+| 6 | 9 | 10 | 9 |
+| 8 | 2010 | 10 | 11 |
+| 10 | 11 | 13 | 12 |
+| 12 | 2010 | 12 | 13 |
+| 14 | 13 | 16 | 14 |
+| 16 | 2011 | 16 | 18 |
+| 18 | 2021 | 18 | 20 |
+| 20 | 2009 | 21 | 19 |
+| 24 | 4015 | 23 | 23 |
+| 32 | 2013 | 31 | 36 |
+| 48 | 4034 | 45 | 36 |
+| 64 | 4036 | 56 | 51 |
+
+Lo que elimina los escalones es `http_dyn_workers`: con el pool fijo de 5 hilos y
+2 s de keep-alive ya baja de 56 ms a 64 concurrentes. El pool inicial de 16 y el
+keep-alive de 1 s son el margen que se deja: 16 hilos ya creados evitan pagar la
+creacion de hilos en la primera rafaga, y 1 s recorta a la mitad la ventana en
+que un hilo queda aparcado. El contenedor puede ajustar los dos con
+`MOTOR_WORKERS` y `MOTOR_KEEPALIVE_S`.
+
 ### Semilla de diagnosticos (datos de demostracion)
 
 `scripts/seed-diagnosticos.mjs` genera diagnosticos variados (marcas, modelos y
@@ -204,6 +245,8 @@ presupuesto, baje `--cantidad` o suba el cupo.
 | `TRUST_PROXY_HOPS` | `2` | Proxies delante de la API (CloudFront y el ALB). Sin declararlos, `req.ip` seria la IP interna del ALB |
 | `ORIGIN_VERIFY` | — | Cabecera secreta que inyecta CloudFront. Sin definirla no se exige (local); definida, quien no la traiga recibe 403 |
 | `MOTOR_TOKEN` | — | Token hexadecimal compartido con el motor. Si el motor no lo define, arranca abierto y lo avisa por stderr. **En produccion es obligatoria**: sin ella la API no arranca. |
+| `MOTOR_WORKERS` | `16` | Hilos iniciales del pool HTTP del motor (`workers(N)`). Con `http_dyn_workers` el pool crece solo por encima si la cola se llena |
+| `MOTOR_KEEPALIVE_S` | `1` | Segundos que un hilo mantiene abierta una conexion keep-alive ociosa (`keep_alive_timeout`). Bajarlo libera antes el hilo |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | Ventana del limite de peticiones (15 min) |
 | `RATE_LIMIT_MAX` | `300` | Peticiones por ventana e IP para toda la API |
 | `LOGIN_RATE_LIMIT_MAX` | `20` | Intentos de login fallidos por ventana y por `(IP, usuario)` |
