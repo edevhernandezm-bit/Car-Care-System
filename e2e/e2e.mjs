@@ -2064,23 +2064,34 @@ test('28 | Motor Prolog: mutex compartido — alta, bootstrap, baja y diagnósti
   await crear('mutex_a_e2e', sintomaCompartido);
   await crear('mutex_b_e2e', sintomaCompartido);
 
-  // El mutex es el mismo para diagnóstico y para toda mutación del catálogo. Si
-  // alguno anidara el cerrojo, esta tormenta dejaría el motor colgado y el test
-  // no terminaría; si el catálogo se escribiera a mitad de una inferencia, saldría
-  // un 5xx. Ambas cosas son lo que el mutex previene.
-  const operaciones = [];
-  for (let i = 0; i < 6; i++) {
-    operaciones.push(crear('mutex_a_e2e', sintomaCompartido));
-    operaciones.push(bootstrap());
-    operaciones.push(diagnosticar(sintomaCompartido));
-    operaciones.push(crear('mutex_b_e2e', sintomaCompartido));
-  }
-  const resultados = await Promise.all(operaciones);
-  for (const r of resultados) {
-    assert.ok(
-      r.status >= 200 && r.status < 300,
-      `ninguna operación concurrente debe fallar (status ${r.status})`
-    );
+  // El mutex es el mismo para diagnóstico y para toda mutación del catálogo
+  // (alta, baja y bootstrap). Si alguno anidara el cerrojo, esta tormenta
+  // dejaría el motor colgado y el test no terminaría; si el catálogo se
+  // escribiera a mitad de una inferencia, saldría un 5xx. Ambas cosas son lo que
+  // el mutex previene.
+  //
+  // Un DELETE puede perder la carrera contra otro DELETE o contra el bootstrap
+  // que limpia las dinámicas, y eso es legítimo: 404 = ya no estaba. La tormenta
+  // se repite diez veces porque una carrera que solo aparece en un orden poco
+  // probable necesita varios intentos para aflorar.
+  const ACEPTADOS = new Set([200, 201, 404]);
+  for (let ronda = 1; ronda <= 10; ronda++) {
+    const operaciones = [];
+    for (let i = 0; i < 6; i++) {
+      operaciones.push(crear('mutex_a_e2e', sintomaCompartido));
+      operaciones.push(borrar('mutex_a_e2e'));
+      operaciones.push(bootstrap());
+      operaciones.push(diagnosticar(sintomaCompartido));
+      operaciones.push(crear('mutex_b_e2e', sintomaCompartido));
+      operaciones.push(borrar('mutex_b_e2e'));
+    }
+    const resultados = await Promise.all(operaciones);
+    for (const r of resultados) {
+      assert.ok(
+        ACEPTADOS.has(r.status),
+        `ronda ${ronda}: una operación concurrente devolvió ${r.status}`
+      );
+    }
   }
 
   // Coherencia tras la tormenta: una falla nueva se crea, infiere y se borra. Si
