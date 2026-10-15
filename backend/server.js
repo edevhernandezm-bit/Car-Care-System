@@ -25,6 +25,11 @@ app.set('trust proxy', TRUST_PROXY_HOPS);
 const PROLOG_TIMEOUT_MS = Number(process.env.PROLOG_TIMEOUT_MS) || 3000;
 // Una replica que falla se deja fuera del reparto este tiempo antes de reintentarla.
 const PROLOG_REPLICA_COOLDOWN_MS = Number(process.env.PROLOG_REPLICA_COOLDOWN_MS) || 30000;
+// Minimo entre sondeos de una misma replica desactualizada para intentar su
+// recarga. Evita que cada peticion del gateway lance un GET /health a la misma
+// replica mientras sigue caida o a medio recargar.
+const PROLOG_RESYNC_MIN_INTERVAL_MS =
+  Number(process.env.PROLOG_RESYNC_MIN_INTERVAL_MS) || 5000;
 
 // El motor de inferencia puede correr en varias replicas identicas detras de este
 // gateway. La lista llega en PROLOG_BASES (separada por comas); si no esta, se usa
@@ -46,10 +51,22 @@ const PROLOG_BASES = (
 //                   atender diagnostico (ver replicaSana).
 //   actualizadoEn  instante (ms) del ultimo CAMBIO de estado visible, para la
 //                   vista del administrador. null = sin cambios desde el arranque.
+//   ultimoIntentoResync  instante (ms) del ultimo sondeo de /health para intentar
+//                   recuperarla; aplica el throttle de PROLOG_RESYNC_MIN_INTERVAL_MS.
+//   timerResync    temporizador (una sola vez) que reintenta el sondeo al vencer
+//                   el cooldown de la replica, para que la recuperacion no dependa
+//                   de que le llegue trafico.
 const estadoReplicas = new Map(
   PROLOG_BASES.map((base) => [
     base,
-    { fallandoHasta: 0, desactualizada: false, resincronizando: false, actualizadoEn: null },
+    {
+      fallandoHasta: 0,
+      desactualizada: false,
+      resincronizando: false,
+      actualizadoEn: null,
+      ultimoIntentoResync: 0,
+      timerResync: null,
+    },
   ])
 );
 
@@ -81,8 +98,7 @@ let cursorReplica = 0;
 // atenderse: su catalogo esta incompleto y devolveria diagnosticos incompletos.
 // Pero si TODAS quedan fuera se intentan igual (mejor intentarlo que devolver
 // 502 sin probar). La recarga de una desactualizada no depende de que le caiga
-// trafico: la dispara la siguiente mutacion del catalogo (difundirAReplicas
-// prueba todas las replicas) o el fallback de ordenReplicas.
+// trafico: la dispara revisarReplicasDesactualizadas(), que sondea /health.
 function replicaSana(base) {
   const e = estadoReplicas.get(base);
   return Date.now() >= e.fallandoHasta && !e.desactualizada && !e.resincronizando;
@@ -90,6 +106,7 @@ function replicaSana(base) {
 
 // Orden de intento: desde el cursor (round-robin) y con las sanas primero.
 function ordenReplicas() {
+  revisarReplicasDesactualizadas();
   const n = PROLOG_BASES.length;
   const rotadas = [];
   for (let i = 0; i < n; i += 1) rotadas.push(PROLOG_BASES[(cursorReplica + i) % n]);
@@ -97,8 +114,22 @@ function ordenReplicas() {
   return [...rotadas.filter(replicaSana), ...rotadas.filter((b) => !replicaSana(b))];
 }
 
+// Un unico sondeo cuando vence el cooldown, para que una replica desactualizada
+// vuelva sin esperar a que le llegue trafico. .unref() para que un temporizador
+// pendiente no impida que el proceso termine.
+function programarResync(base) {
+  const estado = estadoReplicas.get(base);
+  if (estado.timerResync) return;
+  estado.timerResync = setTimeout(() => {
+    estado.timerResync = null;
+    revisarReplicasDesactualizadas();
+  }, PROLOG_REPLICA_COOLDOWN_MS);
+  estado.timerResync.unref();
+}
+
 function marcarReplicaCaida(base, err) {
   tocarEstado(base, { fallandoHasta: Date.now() + PROLOG_REPLICA_COOLDOWN_MS });
+  programarResync(base);
   console.warn(
     `[prolog] Replica ${base} no respondio (${err && (err.name || err.message)}); fuera ${PROLOG_REPLICA_COOLDOWN_MS} ms`
   );
@@ -107,13 +138,39 @@ function marcarReplicaCaida(base, err) {
 // Una replica que responde vuelve al reparto; si se perdio alguna mutacion del
 // catalogo, se recarga el catalogo COMPLETO desde Mongo (la fuente de verdad).
 function marcarReplicaViva(base) {
-  tocarEstado(base, { fallandoHasta: 0 });
   const estado = estadoReplicas.get(base);
+  if (estado.timerResync) {
+    clearTimeout(estado.timerResync);
+    estado.timerResync = null;
+  }
+  tocarEstado(base, { fallandoHasta: 0 });
   if (estado.desactualizada && !estado.resincronizando) {
     tocarEstado(base, { resincronizando: true });
     resincronizarReplica(base).finally(() => {
       tocarEstado(base, { resincronizando: false });
     });
+  }
+}
+
+// Sondea la salud de las replicas desactualizadas y, si responden, las marca
+// vivas (lo que dispara su recarga del catalogo). Se invoca desde ordenReplicas
+// (trafico del gateway), desde el timer que vence el cooldown y desde la vista
+// de administrador. Sin bloquear a quien la llama: el sondeo va en segundo plano.
+function revisarReplicasDesactualizadas() {
+  const ahora = Date.now();
+  for (const base of PROLOG_BASES) {
+    const estado = estadoReplicas.get(base);
+    if (!estado.desactualizada || estado.resincronizando) continue;
+    if (ahora - estado.ultimoIntentoResync < PROLOG_RESYNC_MIN_INTERVAL_MS) continue;
+    estado.ultimoIntentoResync = ahora;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), PROLOG_TIMEOUT_MS);
+    fetch(`${base}/health`, { signal: controller.signal })
+      .then((r) => {
+        if (r.ok) marcarReplicaViva(base);
+      })
+      .catch(() => {})
+      .finally(() => clearTimeout(timeout));
   }
 }
 
@@ -715,6 +772,9 @@ app.get('/health', (_req, res) => {
 // infraestructura no debe salir a internet. `requireAdmin` ya responde 401 sin
 // sesion y 403 sin el rol.
 app.get('/api/admin/replicas', requireAdmin, (_req, res) => {
+  // Consultar el estado tambien empuja la recuperacion: sondea /health de las
+  // desactualizadas y, si responden, dispara su recarga.
+  revisarReplicasDesactualizadas();
   res.json({
     replicas: PROLOG_BASES.map((base, i) => {
       const actualizadoEn = estadoReplicas.get(base).actualizadoEn;

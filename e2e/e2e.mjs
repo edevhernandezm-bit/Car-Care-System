@@ -2636,10 +2636,12 @@ test('35 | API: el estado de las réplicas es solo para el administrador y no ex
 // 2.3 Una réplica desactualizada no atiende hasta recargarse
 // ---------------------------------------------------------------------------
 
-test('36 | Catálogo multi-réplica: una réplica desactualizada no atiende hasta resincronizarse', async () => {
+test('36 | Catálogo multi-réplica: una réplica desactualizada vuelve a sanar sola, sin mutación', async () => {
   // Réplica falsa (HTTP server de bolsillo): responde a /health pero sus
   // /api/fallas/bootstrap fallan al inicio, lo que la deja desactualizada. Así se
-  // comprueba que, mientras no está sana, el reparto NO le manda diagnósticos.
+  // comprueba que, mientras no está sana, el reparto NO le manda diagnósticos y
+  // que, al volver a responder, se recarga SOLA (sin mutación del catálogo): la
+  // detecta el sondeo de /health de revisarReplicasDesactualizadas().
   const puertoFalsa = PUERTO_PROLOG + 3;
   const puertoApi = PUERTO_API + 18;
   let bootstrapOk = false;
@@ -2675,13 +2677,13 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada no atiende hast
       MOTOR_TOKEN: MOTOR_TOKEN_E2E,
       PROLOG_BASES: `http://localhost:${PUERTO_PROLOG},http://localhost:${puertoFalsa}`,
       PROLOG_TIMEOUT_MS: '500',
+      PROLOG_RESYNC_MIN_INTERVAL_MS: '200',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-desactualizada.out'), 'w') }));
   proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-desactualizada.err'), 'w') }));
 
-  let docCreado = null;
   let cookie = null;
   try {
     const base = `http://localhost:${puertoApi}`;
@@ -2710,38 +2712,19 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada no atiende hast
     }
     assert.equal(hits.diagnostico, 0, 'la réplica desactualizada no debe recibir diagnósticos');
 
-    // Se habilita el bootstrap y se provoca una mutación para disparar la recarga.
+    // Se habilita el bootstrap. SIN tocar el catálogo: el sondeo de /health que
+    // dispara /api/admin/replicas (revisarReplicasDesactualizadas) la detecta viva
+    // y lanza su recarga; la recuperación no depende de que llegue una mutación.
     bootstrapOk = true;
-    const creado = await peticionGateway(base, '/api/fallas', {
-      method: 'POST',
-      cookie,
-      body: {
-        nombre: 'Desactualizada e2e',
-        sintomas: ['desactualizada_sintoma_e2e'],
-        vehiculo: { marca: 'gen', modelo: 'gen', transmision: 'desconocida' },
-        causas: ['causa'],
-        procedimiento: ['paso'],
-        precioMin: 100,
-        precioMax: 200,
-        urgencia: 'media',
-        confianzaDato: 'media',
-      },
-    });
-    assert.equal(creado.status, 201, 'la API debe crear la falla');
-    docCreado = await creado.json();
-
-    // Espera a que vuelva a estar sana.
-    let sana = false;
-    for (let i = 0; i < 60; i++) {
+    let estadoFinal = null;
+    for (let i = 0; i < 40; i++) {
       const r = await fetch(`${base}/api/admin/replicas`, { headers: { Cookie: cookie } });
       const datos = await r.json();
-      if (datos.replicas.find((x) => x.alias === 'motor-2')?.estado === 'sana') {
-        sana = true;
-        break;
-      }
+      estadoFinal = datos.replicas.find((x) => x.alias === 'motor-2')?.estado;
+      if (estadoFinal === 'sana') break;
       await sleep(250);
     }
-    assert.ok(sana, 'tras resincronizar debe volver a estar sana');
+    assert.equal(estadoFinal, 'sana', 'sin mutación del catálogo la réplica debe volver a sanar sola');
 
     // Una vez recargada, vuelve a recibir diagnósticos (round-robin).
     const antes = hits.diagnostico;
@@ -2756,13 +2739,6 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada no atiende hast
   } finally {
     if (proc.pid) matarArbol(proc.pid);
     await new Promise((r) => falsa.close(r));
-    if (docCreado && cookie) {
-      try {
-        await fetch(`${API_URL}/api/fallas/${docCreado._id}`, { method: 'DELETE', headers: { Cookie: cookie } });
-      } catch (e) {
-        // limpieza opcional
-      }
-    }
   }
 });
 
