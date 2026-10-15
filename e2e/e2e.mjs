@@ -2643,9 +2643,8 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada no atiende hast
   const puertoFalsa = PUERTO_PROLOG + 3;
   const puertoApi = PUERTO_API + 18;
   let bootstrapOk = false;
-  const hits = { diagnostico: 0, bootstrap: 0 };
+  const hits = { diagnostico: 0 };
   const falsa = crearServidorHttp((req, res) => {
-    let cuerpo = '';
     req.on('data', () => {});
     req.on('end', () => {
       if (req.url === '/health') {
@@ -2653,7 +2652,6 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada no atiende hast
         return res.end('ok');
       }
       if (req.url.startsWith('/api/fallas/bootstrap')) {
-        hits.bootstrap += 1;
         res.writeHead(bootstrapOk ? 200 : 503, { 'Content-Type': 'application/json' });
         return res.end(bootstrapOk ? '{"ok":true}' : '{"error":"sin catalogo"}');
       }
