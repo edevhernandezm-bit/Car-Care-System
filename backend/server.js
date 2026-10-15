@@ -76,10 +76,16 @@ function tocarEstado(base, cambios) {
 // Cursor del round-robin: rota el punto de entrada para repartir la carga.
 let cursorReplica = 0;
 
-// Una replica en cooldown se salta al elegir destino, pero si TODAS lo estan se
-// intentan igual (mejor intentarlo que devolver 502 sin probar).
+// Una replica en cooldown se salta al elegir destino; una desactualizada (le
+// faltan mutaciones y aun no se recarga) o que esta recargando tampoco debe
+// atenderse: su catalogo esta incompleto y devolveria diagnosticos incompletos.
+// Pero si TODAS quedan fuera se intentan igual (mejor intentarlo que devolver
+// 502 sin probar). La recarga de una desactualizada no depende de que le caiga
+// trafico: la dispara la siguiente mutacion del catalogo (difundirAReplicas
+// prueba todas las replicas) o el fallback de ordenReplicas.
 function replicaSana(base) {
-  return Date.now() >= estadoReplicas.get(base).fallandoHasta;
+  const e = estadoReplicas.get(base);
+  return Date.now() >= e.fallandoHasta && !e.desactualizada && !e.resincronizando;
 }
 
 // Orden de intento: desde el cursor (round-robin) y con las sanas primero.

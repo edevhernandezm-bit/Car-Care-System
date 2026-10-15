@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { request as peticionHttp } from 'node:http';
+import { request as peticionHttp, createServer as crearServidorHttp } from 'node:http';
 import {
   existsSync,
   mkdtempSync,
@@ -2144,9 +2144,8 @@ test('29 | Gateway multi-réplica: si una réplica cae, la otra atiende y /healt
     const cookie = await sesionGateway();
     const base = `http://localhost:${puerto}`;
 
-    // El round-robin rota el punto de entrada: la segunda lectura empieza por la
-    // réplica muerta, falla rápido y cae a la viva. Ninguna debe devolver 502
-    // mientras quede una réplica sana.
+    // La réplica muerta quedó desactualizada al arrancar (su sonda falló) y se
+    // salta: las dos lecturas las atiende la viva, sin caer a la muerta.
     for (let i = 0; i < 2; i++) {
       const res = await peticionGateway(base, '/api/prolog/api/sintomas', { cookie });
       assert.equal(res.status, 200, `la lectura ${i + 1} debe atenderse desde la réplica viva`);
@@ -2590,8 +2589,8 @@ test('35 | API: el estado de las réplicas es solo para el administrador y no ex
 
     // Administrador: 200 con una entrada por réplica.
     const cookieAdmin = await sesionGateway();
-    // Dos lecturas al gateway: el round-robin rota el punto de entrada y la
-    // segunda empieza por la réplica muerta, falla y la deja en cooldown.
+    // La réplica muerta (127.0.0.1:9) falla su sonda de arranque y queda
+    // desactualizada; el reparto la salta y atiende la viva.
     for (let i = 0; i < 2; i++) {
       await peticionGateway(base, '/api/prolog/api/sintomas', { cookie: cookieAdmin });
     }
@@ -2626,5 +2625,141 @@ test('35 | API: el estado de las réplicas es solo para el administrador y no ex
     assert.doesNotMatch(texto, /localhost:\d+/, 'no debe filtrarse ningún destino');
   } finally {
     if (proc.pid) matarArbol(proc.pid);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2.3 Una réplica desactualizada no atiende hasta recargarse
+// ---------------------------------------------------------------------------
+
+test('36 | Catálogo multi-réplica: una réplica desactualizada no atiende hasta resincronizarse', async () => {
+  // Réplica falsa (HTTP server de bolsillo): responde a /health pero sus
+  // /api/fallas/bootstrap fallan al inicio, lo que la deja desactualizada. Así se
+  // comprueba que, mientras no está sana, el reparto NO le manda diagnósticos.
+  const puertoFalsa = PUERTO_PROLOG + 3;
+  const puertoApi = PUERTO_API + 18;
+  let bootstrapOk = false;
+  const hits = { diagnostico: 0, bootstrap: 0 };
+  const falsa = crearServidorHttp((req, res) => {
+    let cuerpo = '';
+    req.on('data', () => {});
+    req.on('end', () => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        return res.end('ok');
+      }
+      if (req.url.startsWith('/api/fallas/bootstrap')) {
+        hits.bootstrap += 1;
+        res.writeHead(bootstrapOk ? 200 : 503, { 'Content-Type': 'application/json' });
+        return res.end(bootstrapOk ? '{"ok":true}' : '{"error":"sin catalogo"}');
+      }
+      if (req.url.startsWith('/api/diagnostico')) {
+        hits.diagnostico += 1;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end('{"fallas":[]}');
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end('{}');
+    });
+  });
+  await new Promise((r) => falsa.listen(puertoFalsa, r));
+
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: {
+      ...process.env,
+      PORT: String(puertoApi),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      PROLOG_BASES: `http://localhost:${PUERTO_PROLOG},http://localhost:${puertoFalsa}`,
+      PROLOG_TIMEOUT_MS: '500',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-desactualizada.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-desactualizada.err'), 'w') }));
+
+  let docCreado = null;
+  let cookie = null;
+  try {
+    const base = `http://localhost:${puertoApi}`;
+    await sondeo(`${base}/api/config/tipo-cambio`, { timeout: 60000 });
+    cookie = await sesionGateway();
+
+    // La réplica falsa queda desactualizada: su bootstrap devuelve 503.
+    let estadoFalsa = null;
+    for (let i = 0; i < 40; i++) {
+      const r = await fetch(`${base}/api/admin/replicas`, { headers: { Cookie: cookie } });
+      const datos = await r.json();
+      estadoFalsa = datos.replicas.find((x) => x.alias === 'motor-2')?.estado;
+      if (estadoFalsa === 'desactualizada') break;
+      await sleep(250);
+    }
+    assert.equal(estadoFalsa, 'desactualizada', 'la réplica que no pudo recargarse debe salir desactualizada');
+
+    // Mientras está desactualizada, el reparto no le manda diagnósticos.
+    for (let i = 0; i < 6; i++) {
+      const res = await peticionGateway(base, '/api/prolog/api/diagnostico', {
+        method: 'POST',
+        cookie,
+        body: { marca: 'gen', modelo: 'gen', anio: 0, sintomas: [] },
+      });
+      assert.equal(res.status, 200, 'la réplica sana debe atender');
+    }
+    assert.equal(hits.diagnostico, 0, 'la réplica desactualizada no debe recibir diagnósticos');
+
+    // Se habilita el bootstrap y se provoca una mutación para disparar la recarga.
+    bootstrapOk = true;
+    const creado = await peticionGateway(base, '/api/fallas', {
+      method: 'POST',
+      cookie,
+      body: {
+        nombre: 'Desactualizada e2e',
+        sintomas: ['desactualizada_sintoma_e2e'],
+        vehiculo: { marca: 'gen', modelo: 'gen', transmision: 'desconocida' },
+        causas: ['causa'],
+        procedimiento: ['paso'],
+        precioMin: 100,
+        precioMax: 200,
+        urgencia: 'media',
+        confianzaDato: 'media',
+      },
+    });
+    assert.equal(creado.status, 201, 'la API debe crear la falla');
+    docCreado = await creado.json();
+
+    // Espera a que vuelva a estar sana.
+    let sana = false;
+    for (let i = 0; i < 60; i++) {
+      const r = await fetch(`${base}/api/admin/replicas`, { headers: { Cookie: cookie } });
+      const datos = await r.json();
+      if (datos.replicas.find((x) => x.alias === 'motor-2')?.estado === 'sana') {
+        sana = true;
+        break;
+      }
+      await sleep(250);
+    }
+    assert.ok(sana, 'tras resincronizar debe volver a estar sana');
+
+    // Una vez recargada, vuelve a recibir diagnósticos (round-robin).
+    const antes = hits.diagnostico;
+    for (let i = 0; i < 12 && hits.diagnostico === antes; i++) {
+      await peticionGateway(base, '/api/prolog/api/diagnostico', {
+        method: 'POST',
+        cookie,
+        body: { marca: 'gen', modelo: 'gen', anio: 0, sintomas: [] },
+      });
+    }
+    assert.ok(hits.diagnostico > antes, 'la réplica ya recargada vuelve a recibir diagnósticos');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+    await new Promise((r) => falsa.close(r));
+    if (docCreado && cookie) {
+      try {
+        await fetch(`${API_URL}/api/fallas/${docCreado._id}`, { method: 'DELETE', headers: { Cookie: cookie } });
+      } catch (e) {
+        // limpieza opcional
+      }
+    }
   }
 });
