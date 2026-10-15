@@ -2545,3 +2545,86 @@ test('34 | 2.6 | La semilla guarda la certeza del motor y se niega a sembrar en 
     if (apiSeed.pid) matarArbol(apiSeed.pid);
   }
 });
+
+// ---------------------------------------------------------------------------
+// 2.2 Estado del clúster de motores: solo administrador y sin destinos
+// ---------------------------------------------------------------------------
+
+test('35 | API: el estado de las réplicas es solo para el administrador y no expone destinos', async () => {
+  // Una réplica viva (el motor de la suite) y otra muerta: así la respuesta trae
+  // dos alias y al menos un estado distinto de "sana".
+  const puerto = PUERTO_API + 17;
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: {
+      ...process.env,
+      PORT: String(puerto),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      PROLOG_BASES: `http://localhost:${PUERTO_PROLOG},http://127.0.0.1:9`,
+      PROLOG_TIMEOUT_MS: '500',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-replicas.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-replicas.err'), 'w') }));
+
+  try {
+    const base = `http://localhost:${puerto}`;
+    await sondeo(`${base}/api/config/tipo-cambio`, { timeout: 60000 });
+    const ruta = `${base}/api/admin/replicas`;
+
+    // Sin sesión: 401.
+    assert.equal((await fetch(ruta)).status, 401, 'sin sesión el estado del clúster debe ser 401');
+
+    // Estudiante: 403. La suite vacía usuarios en pruebas anteriores, así que se
+    // recrea la cuenta y se inicia sesión de nuevo en vez de confiar en la cookie.
+    await usuarioEnMongo({ ...CUENTA_API, role: 'estudiante_mecanica', nombre: 'API E2E' });
+    const ingresoEst = await api('/api/auth/login', { method: 'POST', body: CUENTA_API });
+    assert.equal(ingresoEst.status, 200, 'la cuenta estudiante debe poder iniciar sesión');
+    assert.equal(
+      (await fetch(ruta, { headers: { Cookie: ingresoEst.cookie } })).status,
+      403,
+      'un estudiante no debe ver el estado del clúster'
+    );
+
+    // Administrador: 200 con una entrada por réplica.
+    const cookieAdmin = await sesionGateway();
+    // Dos lecturas al gateway: el round-robin rota el punto de entrada y la
+    // segunda empieza por la réplica muerta, falla y la deja en cooldown.
+    for (let i = 0; i < 2; i++) {
+      await peticionGateway(base, '/api/prolog/api/sintomas', { cookie: cookieAdmin });
+    }
+
+    const res = await fetch(ruta, { headers: { Cookie: cookieAdmin } });
+    assert.equal(res.status, 200, 'el administrador debe ver el estado del clúster');
+    const { replicas } = await res.json();
+    assert.equal(replicas.length, 2, 'una entrada por réplica');
+    assert.deepEqual(
+      replicas.map((r) => r.alias),
+      ['motor-1', 'motor-2'],
+      'el alias debe ser estable y por posición, no el destino'
+    );
+
+    const ESTADOS = new Set(['sana', 'caida', 'desactualizada', 'resincronizando']);
+    for (const r of replicas) {
+      assert.ok(ESTADOS.has(r.estado), `estado desconocido: ${r.estado}`);
+      assert.ok(
+        r.actualizadoEn === null || !Number.isNaN(Date.parse(r.actualizadoEn)),
+        'actualizadoEn debe ser null o una marca ISO válida'
+      );
+    }
+    assert.ok(replicas.some((r) => r.estado === 'sana'), 'la réplica viva debe salir sana');
+    assert.ok(
+      replicas.some((r) => r.estado !== 'sana'),
+      'la réplica muerta no debe salir sana'
+    );
+
+    // Nunca los destinos.
+    const texto = JSON.stringify(replicas);
+    assert.doesNotMatch(texto, /127\.0\.0\.1:9/, 'no debe filtrarse la IP muerta');
+    assert.doesNotMatch(texto, /localhost:\d+/, 'no debe filtrarse ningún destino');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
+});

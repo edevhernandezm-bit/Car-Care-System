@@ -42,9 +42,37 @@ const PROLOG_BASES = (
 //   fallandoHasta  instante (ms) hasta el que se evita la replica tras un fallo.
 //   desactualizada la replica se perdio alguna mutacion del catalogo (o el
 //                   bootstrap de arranque) y necesita recargarlo entero al volver.
+//   resincronizando recarga del catalogo en curso; hasta que no termine no debe
+//                   atender diagnostico (ver replicaSana).
+//   actualizadoEn  instante (ms) del ultimo CAMBIO de estado visible, para la
+//                   vista del administrador. null = sin cambios desde el arranque.
 const estadoReplicas = new Map(
-  PROLOG_BASES.map((base) => [base, { fallandoHasta: 0, desactualizada: false, resincronizando: false }])
+  PROLOG_BASES.map((base) => [
+    base,
+    { fallandoHasta: 0, desactualizada: false, resincronizando: false, actualizadoEn: null },
+  ])
 );
+
+// Estado visible de una replica. La precedencia importa: una recarga en curso
+// manda; luego la caida (ahora mismo no responde) por encima de desactualizada
+// (responderia, pero le falta catalogo); al final, sana.
+function estadoVisibleReplica(base) {
+  const e = estadoReplicas.get(base);
+  if (e.resincronizando) return 'resincronizando';
+  if (Date.now() < e.fallandoHasta) return 'caida';
+  if (e.desactualizada) return 'desactualizada';
+  return 'sana';
+}
+
+// Aplica cambios al estado de una replica y sella la hora SOLO si el estado
+// visible cambio. Asi `actualizadoEn` es la hora del ultimo cambio real, no la
+// de la ultima peticion que paso por ahi.
+function tocarEstado(base, cambios) {
+  const e = estadoReplicas.get(base);
+  const antes = estadoVisibleReplica(base);
+  Object.assign(e, cambios);
+  if (estadoVisibleReplica(base) !== antes) e.actualizadoEn = Date.now();
+}
 // Cursor del round-robin: rota el punto de entrada para repartir la carga.
 let cursorReplica = 0;
 
@@ -64,7 +92,7 @@ function ordenReplicas() {
 }
 
 function marcarReplicaCaida(base, err) {
-  estadoReplicas.get(base).fallandoHasta = Date.now() + PROLOG_REPLICA_COOLDOWN_MS;
+  tocarEstado(base, { fallandoHasta: Date.now() + PROLOG_REPLICA_COOLDOWN_MS });
   console.warn(
     `[prolog] Replica ${base} no respondio (${err && (err.name || err.message)}); fuera ${PROLOG_REPLICA_COOLDOWN_MS} ms`
   );
@@ -73,12 +101,12 @@ function marcarReplicaCaida(base, err) {
 // Una replica que responde vuelve al reparto; si se perdio alguna mutacion del
 // catalogo, se recarga el catalogo COMPLETO desde Mongo (la fuente de verdad).
 function marcarReplicaViva(base) {
+  tocarEstado(base, { fallandoHasta: 0 });
   const estado = estadoReplicas.get(base);
-  estado.fallandoHasta = 0;
   if (estado.desactualizada && !estado.resincronizando) {
-    estado.resincronizando = true;
+    tocarEstado(base, { resincronizando: true });
     resincronizarReplica(base).finally(() => {
-      estado.resincronizando = false;
+      tocarEstado(base, { resincronizando: false });
     });
   }
 }
@@ -96,7 +124,7 @@ async function resincronizarReplica(base) {
       signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS * 2),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    estadoReplicas.get(base).desactualizada = false;
+    tocarEstado(base, { desactualizada: false });
     console.log(`[prolog] Replica ${base} resincronizada (${activas.length} fallas)`);
   } catch (e) {
     // Sigue desactualizada: se reintentara en la proxima respuesta de esa replica.
@@ -145,7 +173,7 @@ function difundirAReplicas(ruta, init) {
         marcarReplicaViva(base);
       })
       .catch((err) => {
-        estadoReplicas.get(base).desactualizada = true;
+        tocarEstado(base, { desactualizada: true });
         console.warn(`[prolog] ${ruta} no aplicado en ${base}: ${err.message}`);
       })
       .finally(() => clearTimeout(timeout));
@@ -494,7 +522,7 @@ async function esperarMotor() {
     // marcan desactualizadas para recargarlas cuando vuelvan.
     if (sondas.some(Boolean)) {
       PROLOG_BASES.forEach((base, i) => {
-        if (!sondas[i]) estadoReplicas.get(base).desactualizada = true;
+        if (!sondas[i]) tocarEstado(base, { desactualizada: true });
       });
       return true;
     }
@@ -533,10 +561,10 @@ async function bootstrapFallasDinamicas() {
             signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS * 2),
           });
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          estadoReplicas.get(base).desactualizada = false;
+          tocarEstado(base, { desactualizada: false });
           return r.json();
         } catch (e) {
-          estadoReplicas.get(base).desactualizada = true;
+          tocarEstado(base, { desactualizada: true });
           console.warn(`[bootstrap] Replica ${base} no recargada: ${e.message}`);
           return null;
         }
@@ -672,6 +700,24 @@ app.get('/health', (_req, res) => {
       sanos: PROLOG_BASES.filter(replicaSana).length,
       total: PROLOG_BASES.length,
     },
+  });
+});
+
+// Estado detallado del cluster de motores, SOLO para administrador. El /health
+// publico se queda con los conteos; aqui se da por replica un alias estable
+// (motor-1, motor-2...) y su estado, NUNCA la URL ni la IP: el detalle de la
+// infraestructura no debe salir a internet. `requireAdmin` ya responde 401 sin
+// sesion y 403 sin el rol.
+app.get('/api/admin/replicas', requireAdmin, (_req, res) => {
+  res.json({
+    replicas: PROLOG_BASES.map((base, i) => {
+      const actualizadoEn = estadoReplicas.get(base).actualizadoEn;
+      return {
+        alias: `motor-${i + 1}`,
+        estado: estadoVisibleReplica(base),
+        actualizadoEn: actualizadoEn ? new Date(actualizadoEn).toISOString() : null,
+      };
+    }),
   });
 });
 
