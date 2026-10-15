@@ -70,11 +70,20 @@ Abre <http://localhost:5173> y entra con la cuenta administrador definida en
 `backend\.env`. El navegador solo habla con ese puerto: Vite hace de proxy hacia
 Express, y Express es el unico que habla con el motor.
 
+Para una segunda replica del motor basta otra instancia en otro puerto. Ojo:
+`-Puerto` es el parametro del script, no lee `PORT`.
+
+```powershell
+.\scripts\start-prolog.ps1 -Puerto 8001
+# y la API con: PROLOG_BASES=http://localhost:8000,http://localhost:8001
+```
+
 Para detener:
 
 ```powershell
 .\scripts\start-dev.ps1    -Detener
-.\scripts\start-prolog.ps1 -Detener
+.\scripts\start-prolog.ps1 -Detener                 # el motor del 8000
+.\scripts\start-prolog.ps1 -Detener -Puerto 8001    # la segunda replica
 ```
 
 ### Sonda de salud
@@ -234,12 +243,13 @@ presupuesto, baje `--cantidad` o suba el cupo.
 
 | Variable | Por defecto | Para que sirve |
 |---|---|---|
-| `PORT` | `5000` | Puerto de la API; el motor tambien la lee (con `8000` por defecto). Vite lo lee para apuntar su proxy, asi que basta con definirla en un solo lado |
+| `PORT` | `5000` (API) / `8000` (motor) | Puerto de escucha. Lo leen la API (5000 por defecto) y el motor (8000 por defecto), y Vite lo lee para apuntar su proxy a la API. Cada contenedor tiene el suyo y **no tienen que coincidir**: si iguala el de la API y el del motor, la API no encontrara al motor |
 | `MONGO_URI` | `mongodb://localhost:27017/car_care_system` | Conexion a MongoDB |
 | `PROLOG_BASE` | `http://localhost:8000` | Direccion del motor para el gateway (caso de una sola replica) |
 | `PROLOG_BASES` | — | Varias replicas del motor separadas por comas (manda sobre `PROLOG_BASE`). El gateway reparte en round-robin, evita una replica que falle durante el cooldown y devuelve 502 solo si fallan todas |
 | `PROLOG_TIMEOUT_MS` | `3000` | Tiempo maximo de espera del gateway, por intento y replica |
 | `PROLOG_REPLICA_COOLDOWN_MS` | `30000` | Tiempo que se aparta del reparto una replica que acaba de fallar |
+| `PROLOG_RESYNC_MIN_INTERVAL_MS` | `5000` | Minimo entre sondeos de una replica desactualizada para intentar su recarga; evita sondear en cada peticion |
 | `CORS_ORIGIN` | `http://localhost:5173` | Origenes permitidos, separados por comas, o `*` |
 | `SESSION_SECRET` | valor de desarrollo | Frase que firma las cookies de sesion. **En produccion es obligatoria**: sin ella la API no arranca |
 | `TRUST_PROXY_HOPS` | `2` | Proxies delante de la API (CloudFront y el ALB). Sin declararlos, `req.ip` seria la IP interna del ALB |
@@ -257,8 +267,11 @@ presupuesto, baje `--cantidad` o suba el cupo.
 | `ADMIN_NOMBRE` | `Administrador` | Nombre visible del primer administrador |
 | `SWIPL` | instalacion estandar | Ruta a `swipl.exe` |
 
-`MOTOR_TOKEN` y `PORT` las leen los dos contenedores: deben valer lo mismo en la
-task definition de la API y en la del motor.
+`MOTOR_TOKEN` la leen los dos contenedores y es lo unico que debe valer lo mismo
+en la task definition de la API y en la del motor: con ese token compartido, la
+API se autentica ante el motor. El `PORT` de cada contenedor es el suyo (la API
+escucha en 5000 y el motor en 8000 por defecto) y no tienen nada que ver entre
+si; si los iguala, la API no encontrara al motor.
 
 ### Instalacion con Docker (opcional)
 
