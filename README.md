@@ -250,6 +250,7 @@ presupuesto, baje `--cantidad` o suba el cupo.
 | `PROLOG_TIMEOUT_MS` | `3000` | Tiempo maximo de espera del gateway, por intento y replica |
 | `PROLOG_REPLICA_COOLDOWN_MS` | `30000` | Tiempo que se aparta del reparto una replica que acaba de fallar |
 | `PROLOG_RESYNC_MIN_INTERVAL_MS` | `5000` | Minimo entre sondeos de una replica desactualizada para intentar su recarga; evita sondear en cada peticion |
+| `PROLOG_HEALTH_TIMEOUT_MS` | `1000` | Timeout de la sonda de `/health` que dispara `GET /api/admin/replicas`: cada consulta sondea todas las replicas en paralelo y refleja su salud real, no solo el cooldown. El sondeo solo puede marcar viva; un fallo se muestra caida sin sacar la replica del reparto |
 | `CORS_ORIGIN` | `http://localhost:5173` | Origenes permitidos, separados por comas, o `*` |
 | `SESSION_SECRET` | valor de desarrollo | Frase que firma las cookies de sesion. **En produccion es obligatoria**: sin ella la API no arranca |
 | `TRUST_PROXY_HOPS` | `2` | Proxies delante de la API (CloudFront y el ALB). Sin declararlos, `req.ip` seria la IP interna del ALB |

@@ -30,6 +30,9 @@ const PROLOG_REPLICA_COOLDOWN_MS = Number(process.env.PROLOG_REPLICA_COOLDOWN_MS
 // replica mientras sigue caida o a medio recargar.
 const PROLOG_RESYNC_MIN_INTERVAL_MS =
   Number(process.env.PROLOG_RESYNC_MIN_INTERVAL_MS) || 5000;
+// Timeout de la sonda de salud que dispara la vista de administrador. Corto y
+// aparte del del gateway: aqui solo se quiere saber si la replica responde AHORA.
+const PROLOG_HEALTH_TIMEOUT_MS = Number(process.env.PROLOG_HEALTH_TIMEOUT_MS) || 1000;
 
 // El motor de inferencia puede correr en varias replicas identicas detras de este
 // gateway. La lista llega en PROLOG_BASES (separada por comas); si no esta, se usa
@@ -49,6 +52,10 @@ const PROLOG_BASES = (
 //                   bootstrap de arranque) y necesita recargarlo entero al volver.
 //   resincronizando recarga del catalogo en curso; hasta que no termine no debe
 //                   atender diagnostico (ver replicaSana).
+//   sondeoFallido  el ultimo sondeo de salud (el que dispara la vista de
+//                   administrador) no obtuvo respuesta. SOLO afecta a lo que
+//                   muestra el panel: no entra en replicaSana ni saca a la
+//                   replica del reparto.
 //   actualizadoEn  instante (ms) del ultimo CAMBIO de estado visible, para la
 //                   vista del administrador. null = sin cambios desde el arranque.
 //   ultimoIntentoResync  instante (ms) del ultimo sondeo de /health para intentar
@@ -63,6 +70,7 @@ const estadoReplicas = new Map(
       fallandoHasta: 0,
       desactualizada: false,
       resincronizando: false,
+      sondeoFallido: false,
       actualizadoEn: null,
       ultimoIntentoResync: 0,
       timerResync: null,
@@ -71,12 +79,13 @@ const estadoReplicas = new Map(
 );
 
 // Estado visible de una replica. La precedencia importa: una recarga en curso
-// manda; luego la caida (ahora mismo no responde) por encima de desactualizada
+// manda; luego la caida (ahora mismo no responde, lo diga el reparto por el
+// cooldown o el sondeo en vivo del panel) por encima de desactualizada
 // (responderia, pero le falta catalogo); al final, sana.
 function estadoVisibleReplica(base) {
   const e = estadoReplicas.get(base);
   if (e.resincronizando) return 'resincronizando';
-  if (Date.now() < e.fallandoHasta) return 'caida';
+  if (e.sondeoFallido || Date.now() < e.fallandoHasta) return 'caida';
   if (e.desactualizada) return 'desactualizada';
   return 'sana';
 }
@@ -135,15 +144,22 @@ function marcarReplicaCaida(base, err) {
   );
 }
 
-// Una replica que responde vuelve al reparto; si se perdio alguna mutacion del
-// catalogo, se recarga el catalogo COMPLETO desde Mongo (la fuente de verdad).
-function marcarReplicaViva(base) {
+// Devuelve una replica al reparto: levanta su cooldown y cancela el temporizador
+// que reintentaria su recarga. No dice nada sobre su catalogo.
+function devolverAlReparto(base) {
   const estado = estadoReplicas.get(base);
   if (estado.timerResync) {
     clearTimeout(estado.timerResync);
     estado.timerResync = null;
   }
   tocarEstado(base, { fallandoHasta: 0 });
+}
+
+// Una replica que responde vuelve al reparto; si se perdio alguna mutacion del
+// catalogo, se recarga el catalogo COMPLETO desde Mongo (la fuente de verdad).
+function marcarReplicaViva(base) {
+  devolverAlReparto(base);
+  const estado = estadoReplicas.get(base);
   if (estado.desactualizada && !estado.resincronizando) {
     tocarEstado(base, { resincronizando: true });
     resincronizarReplica(base).finally(() => {
@@ -172,6 +188,34 @@ function revisarReplicasDesactualizadas() {
       .catch(() => {})
       .finally(() => clearTimeout(timeout));
   }
+}
+
+// Sonda /health de TODAS las replicas en paralelo, con timeout corto, para que la
+// vista de administrador refleje el estado real y no solo el cooldown. Nunca saca
+// a una replica del reparto: un fallo solo se muestra como 'caida'
+// (sondeoFallido); una respuesta la devuelve al reparto. La recarga de una
+// desactualizada NO se dispara aqui: la sigue disparando
+// revisarReplicasDesactualizadas(), con su minimo entre intentos, de modo que
+// consultar el panel no relanza el bootstrap en cada refresco.
+async function sondearReplicas() {
+  await Promise.all(
+    PROLOG_BASES.map(async (base) => {
+      let r = null;
+      try {
+        r = await fetch(`${base}/health`, {
+          signal: AbortSignal.timeout(PROLOG_HEALTH_TIMEOUT_MS),
+        });
+      } catch {
+        // Sin respuesta: se muestra caida, pero no se toca el reparto.
+      }
+      if (r && r.ok) {
+        devolverAlReparto(base);
+        tocarEstado(base, { sondeoFallido: false });
+      } else {
+        tocarEstado(base, { sondeoFallido: true });
+      }
+    })
+  );
 }
 
 // Reenvia el catalogo entero a UNA replica. Se usa cuando una replica que se
@@ -814,9 +858,13 @@ app.get('/health', (_req, res) => {
 // (motor-1, motor-2...) y su estado, NUNCA la URL ni la IP: el detalle de la
 // infraestructura no debe salir a internet. `requireAdmin` ya responde 401 sin
 // sesion y 403 sin el rol.
-app.get('/api/admin/replicas', requireAdmin, (_req, res) => {
-  // Consultar el estado tambien empuja la recuperacion: sondea /health de las
-  // desactualizadas y, si responden, dispara su recarga.
+app.get('/api/admin/replicas', requireAdmin, async (_req, res) => {
+  // La consulta sondea /health en vivo (en paralelo) para que el panel refleje el
+  // estado real y no solo el cooldown. El sondeo solo puede marcar viva; un fallo
+  // se muestra caida sin sacar la replica del reparto. La recarga de una
+  // desactualizada la dispara revisarReplicasDesactualizadas(), con su minimo
+  // entre intentos.
+  await sondearReplicas();
   revisarReplicasDesactualizadas();
   res.json({
     replicas: PROLOG_BASES.map((base, i) => {

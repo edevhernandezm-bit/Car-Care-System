@@ -2668,7 +2668,7 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada vuelve a sanar 
   const puertoFalsa = PUERTO_PROLOG + 3;
   const puertoApi = PUERTO_API + 18;
   let bootstrapOk = false;
-  const hits = { diagnostico: 0 };
+  const hits = { diagnostico: 0, bootstrap: 0 };
   const falsa = crearServidorHttp((req, res) => {
     req.on('data', () => {});
     req.on('end', () => {
@@ -2677,6 +2677,7 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada vuelve a sanar 
         return res.end('ok');
       }
       if (req.url.startsWith('/api/fallas/bootstrap')) {
+        hits.bootstrap += 1;
         res.writeHead(bootstrapOk ? 200 : 503, { 'Content-Type': 'application/json' });
         return res.end(bootstrapOk ? '{"ok":true}' : '{"error":"sin catalogo"}');
       }
@@ -2700,7 +2701,9 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada vuelve a sanar 
       MOTOR_TOKEN: MOTOR_TOKEN_E2E,
       PROLOG_BASES: `http://localhost:${PUERTO_PROLOG},http://localhost:${puertoFalsa}`,
       PROLOG_TIMEOUT_MS: '500',
-      PROLOG_RESYNC_MIN_INTERVAL_MS: '200',
+      // Ventana amplia a proposito: mas abajo se comprueba que tres consultas
+      // seguidas del panel caben dentro de un solo intento de recarga.
+      PROLOG_RESYNC_MIN_INTERVAL_MS: '2000',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -2734,6 +2737,23 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada vuelve a sanar 
       assert.equal(res.status, 200, 'la réplica sana debe atender');
     }
     assert.equal(hits.diagnostico, 0, 'la réplica desactualizada no debe recibir diagnósticos');
+
+    // Consultar el panel no relanza el bootstrap en cada refresco: lo impiden el
+    // flag `resincronizando` (una recarga a la vez) y el mínimo entre intentos. Tres
+    // consultas seguidas dentro de la ventana generan como mucho un intento.
+    const antesBootstrap = hits.bootstrap;
+    await sleep(2300); // abre la ventana del mínimo
+    await fetch(`${base}/api/admin/replicas`, { headers: { Cookie: cookie } });
+    for (let i = 0; i < 40 && hits.bootstrap === antesBootstrap; i++) await sleep(50);
+    assert.equal(hits.bootstrap, antesBootstrap + 1, 'la primera consulta dispara un intento');
+    await sleep(200); // deja caer `resincronizando`: sólo queda el mínimo
+    await fetch(`${base}/api/admin/replicas`, { headers: { Cookie: cookie } });
+    await fetch(`${base}/api/admin/replicas`, { headers: { Cookie: cookie } });
+    assert.equal(
+      hits.bootstrap,
+      antesBootstrap + 1,
+      'el mínimo entre intentos impide relanzar el bootstrap en consultas seguidas'
+    );
 
     // Se habilita el bootstrap. SIN tocar el catálogo: el sondeo de /health que
     // dispara /api/admin/replicas (revisarReplicasDesactualizadas) la detecta viva
@@ -2930,6 +2950,91 @@ test('38 | Gateway multi-réplica: un corte a mitad de la respuesta reintenta en
     assert.equal(salud.motores.sanos, 1, 'solo queda sana la replica que respondio');
   } finally {
     if (proc.pid) matarArbol(proc.pid);
+    await new Promise((r) => falsa.close(r));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2.7 El panel refleja la salud real de la réplica, sin tocar el reparto
+// ---------------------------------------------------------------------------
+
+test('39 | API: el estado de las réplicas refleja la salud real, no solo el cooldown', async () => {
+  // Réplica de bolsillo que responde a /health mientras está viva y, al dejar de
+  // responder, cuelga la conexión. La sonda en vivo del panel debe verla caída
+  // aunque el gateway nunca le mandara tráfico (su cooldown sigue en cero) y aunque
+  // ya haya vencido el cooldown, que es lo que una vista por cooldown ignoraría.
+  const puertoFalsa = PUERTO_PROLOG + 6;
+  const puertoApi = PUERTO_API + 21;
+  let viva = true;
+  const falsa = crearServidorHttp((req, res) => {
+    req.on('data', () => {});
+    req.on('end', () => {
+      if (req.url === '/health') {
+        if (!viva) return; // sin respuesta: la sonda debe rendirse por timeout
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        return res.end('ok');
+      }
+      if (req.url.startsWith('/api/fallas/bootstrap')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end('{"ok":true}');
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      return res.end('{}');
+    });
+  });
+  await new Promise((r) => falsa.listen(puertoFalsa, r));
+
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: {
+      ...process.env,
+      PORT: String(puertoApi),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      PROLOG_BASES: `http://localhost:${PUERTO_PROLOG},http://localhost:${puertoFalsa}`,
+      PROLOG_REPLICA_COOLDOWN_MS: '1000',
+      PROLOG_HEALTH_TIMEOUT_MS: '300',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-salud-real.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-salud-real.err'), 'w') }));
+
+  try {
+    const base = `http://localhost:${puertoApi}`;
+    await sondeo(`${base}/api/config/tipo-cambio`, { timeout: 60000 });
+    const cookie = await sesionGateway();
+    const ruta = `${base}/api/admin/replicas`;
+    const consultar = async () => (await fetch(ruta, { headers: { Cookie: cookie } })).json();
+    const estadoDe = (datos) => datos.replicas.find((x) => x.alias === 'motor-2')?.estado;
+
+    // Q1: la falsa responde; la sonda la ve sana.
+    assert.equal(estadoDe(await consultar()), 'sana', 'la réplica que responde debe salir sana');
+
+    // Deja de responder. Q2 la ve caída...
+    viva = false;
+    const q2 = await consultar();
+    assert.equal(estadoDe(q2), 'caida', 'sin respuesta, la segunda consulta debe verla caída');
+
+    // ...pero mirar el panel no la sacó del reparto: el gateway la sigue contando
+    // sana porque nunca le mandó tráfico que fallara.
+    const salud2 = await (await fetch(`${base}/health`)).json();
+    assert.equal(salud2.motores.sanos, 2, 'el panel no puede degradar el reparto por un sondeo');
+
+    // Vencido el cooldown, una vista basada solo en él diría sana; la sonda en vivo
+    // la sigue viendo caída.
+    await sleep(1200);
+    assert.equal(estadoDe(await consultar()), 'caida', 'el cooldown vencido no la vuelve a mostrar sana');
+
+    // Nunca los destinos.
+    assert.doesNotMatch(
+      JSON.stringify(q2),
+      /localhost:\d+|127\.0\.0\.1/,
+      'no debe filtrarse la URL ni la IP'
+    );
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+    falsa.closeAllConnections();
     await new Promise((r) => falsa.close(r));
   }
 });
