@@ -1,0 +1,7 @@
+.git
+**/node_modules
+.env*
+frontend/dist
+scripts/resultados
+.cloud-state.json
+**/*.md
