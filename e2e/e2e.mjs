@@ -2664,7 +2664,7 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada vuelve a sanar 
   // /api/fallas/bootstrap fallan al inicio, lo que la deja desactualizada. Así se
   // comprueba que, mientras no está sana, el reparto NO le manda diagnósticos y
   // que, al volver a responder, se recarga SOLA (sin mutación del catálogo): la
-  // detecta el sondeo de /health de revisarReplicasDesactualizadas().
+  // detecta el sondeo de /health de revisarReplicas().
   const puertoFalsa = PUERTO_PROLOG + 3;
   const puertoApi = PUERTO_API + 18;
   let bootstrapOk = false;
@@ -2756,7 +2756,7 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada vuelve a sanar 
     );
 
     // Se habilita el bootstrap. SIN tocar el catálogo: el sondeo de /health que
-    // dispara /api/admin/replicas (revisarReplicasDesactualizadas) la detecta viva
+    // dispara /api/admin/replicas (revisarReplicas) la detecta viva
     // y lanza su recarga; la recuperación no depende de que llegue una mutación.
     bootstrapOk = true;
     let estadoFinal = null;
@@ -2782,6 +2782,231 @@ test('36 | Catálogo multi-réplica: una réplica desactualizada vuelve a sanar 
   } finally {
     if (proc.pid) matarArbol(proc.pid);
     await new Promise((r) => falsa.close(r));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2.3c Reinicio silencioso: el gateway lo detecta por el identificador de arranque
+//      que el motor publica en /health, aunque ninguna petición haya fallado, y
+//      recarga la réplica solo.
+// ---------------------------------------------------------------------------
+
+// Réplica de bolsillo para estas pruebas: publica en /health el identificador de
+// arranque y el número de fallas que la prueba controle, "carga" el catálogo que
+// recibe en el bootstrap, y puede simular una caída (deja de responder del todo) o
+// un único timeout en un diagnóstico.
+function replicaDeBolsillo() {
+  const est = { startupId: 1, count: 0, alive: true, bootstrapOk: true, colgarDiagnostico: false };
+  const hits = { bootstrap: 0, diagnostico: 0, colgado: 0 };
+  const server = crearServidorHttp((req, res) => {
+    let cuerpo = '';
+    req.on('data', (d) => { cuerpo += d; });
+    req.on('end', () => {
+      if (!est.alive) return; // caída: ni siquiera contesta /health
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ status: 'ok', startupId: est.startupId, userFailuresCount: est.count }));
+      }
+      if (req.url.startsWith('/api/fallas/bootstrap')) {
+        hits.bootstrap += 1;
+        if (!est.bootstrapOk) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          return res.end('{"error":"sin catalogo"}');
+        }
+        try { est.count = (JSON.parse(cuerpo || '{}').fallas || []).length; } catch {}
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ status: 'success', count: est.count }));
+      }
+      if (req.url.startsWith('/api/diagnostico')) {
+        if (est.colgarDiagnostico) { est.colgarDiagnostico = false; hits.colgado += 1; return; }
+        hits.diagnostico += 1;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end('{"fallas":[]}');
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end('{}');
+    });
+  });
+  return { est, hits, server };
+}
+
+// Estado que el panel asigna a una réplica, sondeando /health en vivo.
+async function estadoDeReplica(base, cookie, alias) {
+  const r = await fetch(`${base}/api/admin/replicas`, { headers: { Cookie: cookie } });
+  return (await r.json()).replicas.find((x) => x.alias === alias)?.estado;
+}
+
+// Arranca una API con la réplica de bolsillo como motor-2, con ventanas cortas para
+// que las pruebas no tarden.
+function arrancarGatewayDeBolsillo(puertoApi, puertoFalsa, extra = {}) {
+  return spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: {
+      ...process.env,
+      PORT: String(puertoApi),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      PROLOG_BASES: `http://localhost:${PUERTO_PROLOG},http://localhost:${puertoFalsa}`,
+      PROLOG_TIMEOUT_MS: '500',
+      PROLOG_RESYNC_MIN_INTERVAL_MS: '500',
+      ...extra,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+const DIAG_VACIO = { marca: 'gen', modelo: 'gen', anio: 0, sintomas: [] };
+
+test('36a | Reinicio silencioso: cae y vuelve con otro arranque y catálogo vacío → se recarga sola', async () => {
+  const puertoFalsa = PUERTO_PROLOG + 7;
+  const puertoApi = PUERTO_API + 22;
+  const { est, hits, server } = replicaDeBolsillo();
+  await new Promise((r) => server.listen(puertoFalsa, r));
+
+  const base = `http://localhost:${puertoApi}`;
+  const cookie = await sesionGateway();
+  // Catálogo no vacío: así el reinicio en vacío se nota en el conteo además de en el
+  // identificador de arranque. La falla se crea ANTES de arrancar el gateway para
+  // que su bootstrap de arranque la cargue en la réplica de bolsillo.
+  const creada = await gateway('/api/fallas', {
+    method: 'POST',
+    cookie,
+    body: {
+      nombre: 'Reinicio A', sintomas: ['reinicio_a_e2e'],
+      vehiculo: { marca: 'gen', modelo: 'gen', transmision: 'desconocida' },
+      causas: ['causa reinicio'], procedimiento: ['paso reinicio'],
+      precioMin: 100, precioMax: 200, urgencia: 'media', confianzaDato: 'media',
+    },
+  });
+  assert.equal(creada.status, 201, 'la falla de contexto debe crearse');
+  const fallaId = (await creada.json())._id;
+
+  const proc = arrancarGatewayDeBolsillo(puertoApi, puertoFalsa, { PROLOG_REPLICA_COOLDOWN_MS: '1500' });
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-reinicio-a.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-reinicio-a.err'), 'w') }));
+
+  try {
+    await sondeo(`${base}/api/config/tipo-cambio`, { timeout: 60000 });
+
+    // Arranca con la falla cargada en la réplica de bolsillo.
+    for (let i = 0; i < 50 && est.count < 1; i++) await sleep(100);
+    assert.ok(est.count >= 1, 'el bootstrap de arranque debe haber cargado la falla en la réplica');
+    const antes = hits.bootstrap;
+
+    // La réplica muere del todo. El gateway lo nota con una consulta y la deja en
+    // cooldown (ninguna petición de la réplica responde).
+    est.alive = false;
+    for (let i = 0; i < 6; i++) {
+      await peticionGateway(base, '/api/prolog/api/diagnostico', { method: 'POST', cookie, body: DIAG_VACIO });
+    }
+    assert.equal(await estadoDeReplica(base, cookie, 'motor-2'), 'caida', 'la réplica muerta debe salir del reparto');
+
+    // Vuelve, pero es un proceso nuevo con el catálogo vacío: otro identificador y
+    // cero fallas. Para el gateway no falló ninguna petición: solo cambió /health.
+    est.alive = true;
+    est.startupId = 2;
+    est.count = 0;
+
+    // Sin mutación del catálogo, el sondeo de /health descubre el reinicio y recarga.
+    let estadoFinal = null;
+    for (let i = 0; i < 60; i++) {
+      estadoFinal = await estadoDeReplica(base, cookie, 'motor-2');
+      if (estadoFinal === 'sana' && hits.bootstrap > antes) break;
+      await sleep(200);
+    }
+    assert.equal(estadoFinal, 'sana', 'la réplica reiniciada debe recargarse y volver a sanar');
+    assert.ok(hits.bootstrap > antes, 'la recarga de la réplica reiniciada debe haber corrido');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+    server.closeAllConnections?.();
+    await new Promise((r) => server.close(r));
+    await gateway(`/api/fallas/${fallaId}`, { method: 'DELETE', cookie });
+  }
+});
+
+test('36b | Reinicio silencioso: se reinicia entre dos consultas sin fallar ninguna → se detecta y recarga', async () => {
+  const puertoFalsa = PUERTO_PROLOG + 8;
+  const puertoApi = PUERTO_API + 23;
+  const { est, hits, server } = replicaDeBolsillo();
+  await new Promise((r) => server.listen(puertoFalsa, r));
+
+  const base = `http://localhost:${puertoApi}`;
+  const proc = arrancarGatewayDeBolsillo(puertoApi, puertoFalsa);
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-reinicio-b.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-reinicio-b.err'), 'w') }));
+
+  try {
+    await sondeo(`${base}/api/config/tipo-cambio`, { timeout: 60000 });
+    const cookie = await sesionGateway();
+    for (let i = 0; i < 50 && hits.bootstrap < 1; i++) await sleep(100);
+    const antes = hits.bootstrap;
+
+    // Dos consultas normales. Entre ellas la réplica se reinicia (proceso nuevo,
+    // catálogo vacío) pero NUNCA deja de responder: ninguna petición falla.
+    const q1 = await peticionGateway(base, '/api/prolog/api/diagnostico', { method: 'POST', cookie, body: DIAG_VACIO });
+    assert.equal(q1.status, 200, 'la primera consulta debe responder 200');
+    est.startupId = 2;
+    est.count = 0;
+    await sleep(700); // deja vencer el mínimo entre sondeos para que la próxima consulta sondee
+    const q2 = await peticionGateway(base, '/api/prolog/api/diagnostico', { method: 'POST', cookie, body: DIAG_VACIO });
+    assert.equal(q2.status, 200, 'la segunda consulta debe responder 200');
+
+    // La detección no depende de un fallo: el startupId que publica /health ya no
+    // coincide y el sondeo que dispara la propia consulta la manda a recargar.
+    let estadoFinal = null;
+    for (let i = 0; i < 60; i++) {
+      estadoFinal = await estadoDeReplica(base, cookie, 'motor-2');
+      if (estadoFinal === 'sana' && hits.bootstrap > antes) break;
+      await sleep(200);
+    }
+    assert.ok(hits.bootstrap > antes, 'la recarga debe dispararse sin que ninguna consulta fallara');
+    assert.equal(estadoFinal, 'sana', 'tras recargar debe volver a sanar');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+    server.closeAllConnections?.();
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('36c | Timeout puntual con el mismo arranque: no recarga la réplica', async () => {
+  const puertoFalsa = PUERTO_PROLOG + 9;
+  const puertoApi = PUERTO_API + 24;
+  const { est, hits, server } = replicaDeBolsillo();
+  await new Promise((r) => server.listen(puertoFalsa, r));
+
+  const base = `http://localhost:${puertoApi}`;
+  const proc = arrancarGatewayDeBolsillo(puertoApi, puertoFalsa, { PROLOG_REPLICA_COOLDOWN_MS: '1000' });
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-reinicio-c.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-reinicio-c.err'), 'w') }));
+
+  try {
+    await sondeo(`${base}/api/config/tipo-cambio`, { timeout: 60000 });
+    const cookie = await sesionGateway();
+    for (let i = 0; i < 50 && hits.bootstrap < 1; i++) await sleep(100);
+    const antes = hits.bootstrap;
+
+    // Un único corte: la réplica recibe un diagnóstico y no contesta (timeout). El
+    // gateway la deja en cooldown, pero su identificador NO cambia: es la misma
+    // réplica, solo tuvo un mal momento.
+    est.colgarDiagnostico = true;
+    for (let i = 0; i < 10 && hits.colgado === 0; i++) {
+      await peticionGateway(base, '/api/prolog/api/diagnostico', { method: 'POST', cookie, body: DIAG_VACIO });
+    }
+    assert.equal(hits.colgado, 1, 'el gateway debe haber sufrido el timeout al intentar la réplica');
+
+    // Al vencer el cooldown, la sonda la ve viva con el MISMO arranque y el mismo
+    // catálogo: no hay nada que recargar. Se fuerza tráfico y panel un rato.
+    await sleep(1500);
+    for (let i = 0; i < 10; i++) {
+      await peticionGateway(base, '/api/prolog/api/diagnostico', { method: 'POST', cookie, body: DIAG_VACIO });
+      await sleep(150);
+    }
+    assert.equal(await estadoDeReplica(base, cookie, 'motor-2'), 'sana', 'la réplica debe seguir sana');
+    assert.equal(hits.bootstrap, antes, 'un timeout con el mismo arranque no debe recargar la réplica');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+    server.closeAllConnections?.();
+    await new Promise((r) => server.close(r));
   }
 });
 

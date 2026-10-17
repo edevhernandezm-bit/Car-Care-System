@@ -1271,11 +1271,36 @@ inicio :-
 :- http_handler(root(api/historial), con_token(procesar_historial), [methods([options, get])]).   % NUEVO (aditivo)
 
 % Sonda de salud. No lleva con_token a proposito: la pide el orquestador, que no
-% conoce el token, y no toca la base de conocimiento, asi que no puede colgarse.
+% conoce el token, y es lo unico que publica de su estado. Ademas del `status`
+% publica un identificador de arranque aleatorio y cuantas fallas de usuario tiene:
+% el gateway compara ambos entre sondeos para detectar un reinicio rapido (el
+% startupId cambia aunque el gateway no viera ningun fallo) o un catalogo que ya no
+% coincide con lo que el creyo cargar.
 :- http_handler(root(health), procesar_health, [methods([get])]).
 
+:- dynamic startup_id/1.
+
+% Identificador aleatorio de arranque. Se genera UNA vez por proceso: mientras el
+% motor no se reinicie, `startup_id/1` no cambia. El rango es ancho para que dos
+% arranques no coincidan por azar.
+init_startup_id :-
+    (   startup_id(_)
+    ->  true
+    ;   random(1000000000000, 10000000000000, N),
+        assertz(startup_id(N))
+    ).
+
 procesar_health(_Request) :-
-    reply_json_dict(_{status: "ok"}).
+    init_startup_id,
+    startup_id(Id),
+    % El conteo se lee bajo el MISMO mutex que las mutaciones: si un bootstrap
+    % corriera a la vez, el findall veria el catalogo a medio reconstruir (p.ej. 0
+    % justo despues del retract) y el gateway creeria que la replica se
+    % desincronizo cuando no.
+    with_mutex(diagnostico_mutex,
+               ( findall(F, falla_usuario(F), Fs),
+                 length(Fs, UserCount) )),
+    reply_json_dict(_{status: "ok", startupId: Id, userFailuresCount: UserCount}).
 
 % El motor no comprueba nada por si mismo: cualquiera que alcance su puerto
 % podria vaciar el catalogo (DELETE /api/fallas) o sobreescribirlo (bootstrap).

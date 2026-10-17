@@ -92,7 +92,10 @@ Para detener:
 `503 {"status":"degradado","db":"desconectado"}` segun MongoDB, y es la que usa
 el balanceador como health check. Ademas publica `motores: { sanos, total }`: el
 conteo de replicas del motor que el gateway tiene disponibles (los destinos no
-salen). El motor expone la suya, tambien publica, en `http://localhost:8000/health`.
+salen). El motor expone la suya, tambien publica, en `http://localhost:8000/health`;
+ademas de `status` publica un identificador de arranque y cuantas fallas de usuario
+tiene, y el gateway los compara entre sondeos para saber si una replica se reinicio
+o perdio su catalogo.
 
 Es de las pocas rutas abiertas: junto con `GET /api/config/tipo-cambio` y
 `POST /api/auth/logout`, es lo que el navegador necesita antes de entrar. El
@@ -249,7 +252,7 @@ presupuesto, baje `--cantidad` o suba el cupo.
 | `PROLOG_BASES` | — | Varias replicas del motor separadas por comas (manda sobre `PROLOG_BASE`). El gateway reparte en round-robin, evita una replica que falle durante el cooldown y devuelve 502 solo si fallan todas |
 | `PROLOG_TIMEOUT_MS` | `3000` | Tiempo maximo de espera del gateway, por intento y replica |
 | `PROLOG_REPLICA_COOLDOWN_MS` | `30000` | Tiempo que se aparta del reparto una replica que acaba de fallar |
-| `PROLOG_RESYNC_MIN_INTERVAL_MS` | `5000` | Minimo entre sondeos de una replica desactualizada para intentar su recarga; evita sondear en cada peticion |
+| `PROLOG_RESYNC_MIN_INTERVAL_MS` | `5000` | Minimo entre sondeos de `/health` de una misma replica; evita sondear en cada peticion. Con ellos el gateway detecta que una replica se reinicio (su identificador de arranque cambio) aunque no viera ningun fallo, y recarga la que este desactualizada |
 | `PROLOG_HEALTH_TIMEOUT_MS` | `1000` | Timeout de la sonda de `/health` que dispara `GET /api/admin/replicas`: cada consulta sondea todas las replicas en paralelo y refleja su salud real, no solo el cooldown. El sondeo solo puede marcar viva; un fallo se muestra caida sin sacar la replica del reparto |
 | `CORS_ORIGIN` | `http://localhost:5173` | Origenes permitidos, separados por comas, o `*` |
 | `SESSION_SECRET` | valor de desarrollo | Frase que firma las cookies de sesion. **En produccion es obligatoria**: sin ella la API no arranca |

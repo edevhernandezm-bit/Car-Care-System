@@ -63,6 +63,13 @@ const PROLOG_BASES = (
 //   timerResync    temporizador (una sola vez) que reintenta el sondeo al vencer
 //                   el cooldown de la replica, para que la recuperacion no dependa
 //                   de que le llegue trafico.
+//   startupId      identificador de arranque que el motor publica en /health. Si
+//                   cambia entre dos sondeos, el motor se reinicio (aunque no
+//                   viera ningun fallo) y hay que recargarle el catalogo.
+//   userFailuresLastBoot  nº de fallas de usuario que el motor tenia la ultima vez
+//                   que se le dio por bueno (bootstrap, recarga o mutacion
+//                   aplicada). Si deja de coincidir, el catalogo se perdio o se
+//                   cambio por fuera. null = aun no se sabe: no se compara.
 const estadoReplicas = new Map(
   PROLOG_BASES.map((base) => [
     base,
@@ -74,6 +81,8 @@ const estadoReplicas = new Map(
       actualizadoEn: null,
       ultimoIntentoResync: 0,
       timerResync: null,
+      startupId: null,
+      userFailuresLastBoot: null,
     },
   ])
 );
@@ -107,7 +116,7 @@ let cursorReplica = 0;
 // atenderse: su catalogo esta incompleto y devolveria diagnosticos incompletos.
 // Pero si TODAS quedan fuera se intentan igual (mejor intentarlo que devolver
 // 502 sin probar). La recarga de una desactualizada no depende de que le caiga
-// trafico: la dispara revisarReplicasDesactualizadas(), que sondea /health.
+// trafico: la dispara revisarReplicas(), que sondea /health.
 function replicaSana(base) {
   const e = estadoReplicas.get(base);
   return Date.now() >= e.fallandoHasta && !e.desactualizada && !e.resincronizando;
@@ -115,7 +124,7 @@ function replicaSana(base) {
 
 // Orden de intento: desde el cursor (round-robin) y con las sanas primero.
 function ordenReplicas() {
-  revisarReplicasDesactualizadas();
+  revisarReplicas();
   const n = PROLOG_BASES.length;
   const rotadas = [];
   for (let i = 0; i < n; i += 1) rotadas.push(PROLOG_BASES[(cursorReplica + i) % n]);
@@ -131,7 +140,7 @@ function programarResync(base) {
   if (estado.timerResync) return;
   estado.timerResync = setTimeout(() => {
     estado.timerResync = null;
-    revisarReplicasDesactualizadas();
+    revisarReplicas();
   }, PROLOG_REPLICA_COOLDOWN_MS);
   estado.timerResync.unref();
 }
@@ -155,10 +164,31 @@ function devolverAlReparto(base) {
   tocarEstado(base, { fallandoHasta: 0 });
 }
 
-// Una replica que responde vuelve al reparto; si se perdio alguna mutacion del
-// catalogo, se recarga el catalogo COMPLETO desde Mongo (la fuente de verdad).
-function marcarReplicaViva(base) {
+// Compara la identidad que el motor publica en /health (startupId y nº de fallas
+// de usuario) con la ultima conocida y guarda la nueva. Devuelve true si el motor
+// se reinicio (aunque el gateway no viera ningun fallo) o si su catalogo dejo de
+// coincidir con el ultimo bootstrap: en ambos casos hay que recargarlo entero. Un
+// motor que no publica esos campos (version vieja, replica de bolsillo) no cambia
+// nada: solo se compara lo que los dos lados conocen.
+function identidadCambio(base, healthJson) {
+  const estado = estadoReplicas.get(base);
+  const startupId = healthJson.startupId ?? null;
+  const uf = (typeof healthJson.userFailuresCount === 'number') ? healthJson.userFailuresCount : null;
+  const cambio =
+    (estado.startupId !== null && startupId !== null && estado.startupId !== startupId) ||
+    (estado.userFailuresLastBoot !== null && uf !== null && estado.userFailuresLastBoot !== uf);
+  if (startupId !== null) estado.startupId = startupId;
+  if (uf !== null) estado.userFailuresLastBoot = uf;
+  return cambio;
+}
+
+// Una replica que responde vuelve al reparto. Si su identidad cambio (se reinicio
+// o su catalogo ya no coincide con lo cargado) queda desactualizada y se recarga
+// entera desde Mongo, la fuente de verdad: un reinicio rapido no se detecta por
+// fallos porque el gateway nunca llega a ver ninguno.
+function marcarReplicaViva(base, healthJson = {}) {
   devolverAlReparto(base);
+  if (identidadCambio(base, healthJson)) tocarEstado(base, { desactualizada: true });
   const estado = estadoReplicas.get(base);
   if (estado.desactualizada && !estado.resincronizando) {
     tocarEstado(base, { resincronizando: true });
@@ -168,35 +198,43 @@ function marcarReplicaViva(base) {
   }
 }
 
-// Sondea la salud de las replicas desactualizadas y, si responden, las marca
-// vivas (lo que dispara su recarga del catalogo). Se invoca desde ordenReplicas
-// (trafico del gateway), desde el timer que vence el cooldown y desde la vista
-// de administrador. Sin bloquear a quien la llama: el sondeo va en segundo plano.
-function revisarReplicasDesactualizadas() {
+// Lee /health de una replica y aplica lo leido. Se usa tras cada operacion que
+// cambia su catalogo (bootstrap, recarga, mutacion difundida) para dejar al dia el
+// startupId y el conteo de referencia; sin esto, una mutacion propia del gateway
+// pareceria un catalogo cambiado por fuera y recargaria la replica sin motivo.
+async function refrescarIdentidad(base) {
+  try {
+    const r = await fetch(`${base}/health`, { signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS) });
+    if (r.ok) marcarReplicaViva(base, await r.json().catch(() => ({})));
+  } catch {
+    // Sin respuesta: lo resuelve el proximo sondeo o el cooldown.
+  }
+}
+
+// Sondea /health de TODAS las replicas, en segundo plano y con un minimo entre
+// intentos por replica, para (a) recargar las desactualizadas y (b) descubrir un
+// reinicio del motor entre dos consultas: el startupId que publica /health cambia
+// aunque el gateway no viera ningun fallo. Se invoca desde ordenReplicas (trafico
+// del gateway), desde el timer que vence el cooldown y desde la vista de
+// administrador; nunca bloquea a quien la llama.
+function revisarReplicas() {
   const ahora = Date.now();
   for (const base of PROLOG_BASES) {
     const estado = estadoReplicas.get(base);
-    if (!estado.desactualizada || estado.resincronizando) continue;
+    if (estado.resincronizando) continue;
     if (ahora - estado.ultimoIntentoResync < PROLOG_RESYNC_MIN_INTERVAL_MS) continue;
     estado.ultimoIntentoResync = ahora;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), PROLOG_TIMEOUT_MS);
-    fetch(`${base}/health`, { signal: controller.signal })
-      .then((r) => {
-        if (r.ok) marcarReplicaViva(base);
-      })
-      .catch(() => {})
-      .finally(() => clearTimeout(timeout));
+    refrescarIdentidad(base);
   }
 }
 
 // Sonda /health de TODAS las replicas en paralelo, con timeout corto, para que la
 // vista de administrador refleje el estado real y no solo el cooldown. Nunca saca
 // a una replica del reparto: un fallo solo se muestra como 'caida'
-// (sondeoFallido); una respuesta la devuelve al reparto. La recarga de una
-// desactualizada NO se dispara aqui: la sigue disparando
-// revisarReplicasDesactualizadas(), con su minimo entre intentos, de modo que
-// consultar el panel no relanza el bootstrap en cada refresco.
+// (sondeoFallido); una respuesta la devuelve al reparto. Si la identidad cambio,
+// la deja desactualizada; la recarga en si NO se dispara aqui, la sigue disparando
+// revisarReplicas(), con su minimo entre intentos, de modo que consultar el panel
+// no relanza el bootstrap en cada refresco.
 async function sondearReplicas() {
   await Promise.all(
     PROLOG_BASES.map(async (base) => {
@@ -209,6 +247,8 @@ async function sondearReplicas() {
         // Sin respuesta: se muestra caida, pero no se toca el reparto.
       }
       if (r && r.ok) {
+        const j = await r.json().catch(() => ({}));
+        if (identidadCambio(base, j)) tocarEstado(base, { desactualizada: true });
         devolverAlReparto(base);
         tocarEstado(base, { sondeoFallido: false });
       } else {
@@ -232,6 +272,9 @@ async function resincronizarReplica(base) {
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     tocarEstado(base, { desactualizada: false });
+    // El conteo que trae el motor es la referencia buena (puede no coincidir
+    // exactamente con activas.length si el motor descarto alguna falla invalida).
+    await refrescarIdentidad(base);
     console.log(`[prolog] Replica ${base} resincronizada (${activas.length} fallas)`);
   } catch (e) {
     // Sigue desactualizada: se reintentara en la proxima respuesta de esa replica.
@@ -312,15 +355,20 @@ async function pedirAMotor(ruta, init) {
 // desactualizada y se recargara entera cuando vuelva (ver marcarReplicaViva).
 function difundirAReplicas(ruta, init) {
   for (const base of PROLOG_BASES) {
+    const estado = estadoReplicas.get(base);
+    // Esta mutacion va a cambiar el catalogo del motor: hasta relevarlo desde
+    // /health, el conteo de referencia no vale y no debe hacer que un sondeo la
+    // marque desactualizada por una diferencia que el propio gateway provoco.
+    estado.userFailuresLastBoot = null;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), PROLOG_TIMEOUT_MS);
     fetch(`${base}${ruta}`, { ...init, signal: controller.signal })
-      .then((r) => {
+      .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        // Respondio: se levanta el cooldown. Si ademas venia desactualizada, esto
-        // dispara la recarga del catalogo COMPLETO (marcarReplicaViva), porque este
-        // POST solo aplico el ultimo cambio y le siguen faltando los anteriores.
-        marcarReplicaViva(base);
+        // Respondio: se levanta el cooldown y se relee /health (marcarReplicaViva):
+        // si ademas venia desactualizada, se recarga el catalogo COMPLETO, porque
+        // este POST solo aplico el ultimo cambio y le siguen faltando los previos.
+        await refrescarIdentidad(base);
       })
       .catch((err) => {
         tocarEstado(base, { desactualizada: true });
@@ -712,6 +760,9 @@ async function bootstrapFallasDinamicas() {
           });
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           tocarEstado(base, { desactualizada: false });
+          // Deja al dia el startupId y el conteo real del motor: sin esto, la
+          // primera sonda posterior veria una diferencia y recargaria en vano.
+          await refrescarIdentidad(base);
           return r.json();
         } catch (e) {
           tocarEstado(base, { desactualizada: true });
@@ -862,10 +913,9 @@ app.get('/api/admin/replicas', requireAdmin, async (_req, res) => {
   // La consulta sondea /health en vivo (en paralelo) para que el panel refleje el
   // estado real y no solo el cooldown. El sondeo solo puede marcar viva; un fallo
   // se muestra caida sin sacar la replica del reparto. La recarga de una
-  // desactualizada la dispara revisarReplicasDesactualizadas(), con su minimo
-  // entre intentos.
+  // desactualizada la dispara revisarReplicas(), con su minimo entre intentos.
   await sondearReplicas();
-  revisarReplicasDesactualizadas();
+  revisarReplicas();
   res.json({
     replicas: PROLOG_BASES.map((base, i) => {
       const actualizadoEn = estadoReplicas.get(base).actualizadoEn;
