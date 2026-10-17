@@ -60,6 +60,20 @@ const PROLOG_BASES = (
 //                   vista del administrador. null = sin cambios desde el arranque.
 //   ultimoIntentoResync  instante (ms) del ultimo sondeo de /health para intentar
 //                   recuperarla; aplica el throttle de PROLOG_RESYNC_MIN_INTERVAL_MS.
+//   identidadConfirmadaEn  instante (ms) del ultimo sondeo de /health que la hallo
+//                   viva SIN cambio de identidad. El reparto exige esta
+//                   confirmacion RECIENTE para no mandarle un diagnostico a una
+//                   replica que pudo reiniciarse (catalogo vacio) sin que el
+//                   gateway viera ningun fallo; un diagnostico con exito NO la
+//                   confirma: prueba que esta viva, no que siga siendo ella.
+//                   En un motor que no publica identidad, cualquier /health que
+//                   responda cuenta como confirmacion (no hay nada que comparar).
+//   sondaIdentidad  promesa del sondeo de identidad en vuelo, para no lanzar dos a
+//                   la vez sobre la misma replica.
+//   errorSonda     ultimo error de red del sondeo de /health. Solo se usa como
+//                   causa del 502 cuando no queda ninguna candidata: sin esto, un
+//                   502 por "todas sin confirmar" perderia el codigo de red que
+//                   distingue "cayo el motor" de un 500 real.
 //   timerResync    temporizador (una sola vez) que reintenta el sondeo al vencer
 //                   el cooldown de la replica, para que la recuperacion no dependa
 //                   de que le llegue trafico.
@@ -80,6 +94,9 @@ const estadoReplicas = new Map(
       sondeoFallido: false,
       actualizadoEn: null,
       ultimoIntentoResync: 0,
+      identidadConfirmadaEn: 0,
+      sondaIdentidad: null,
+      errorSonda: null,
       timerResync: null,
       startupId: null,
       userFailuresLastBoot: null,
@@ -114,22 +131,72 @@ let cursorReplica = 0;
 // Una replica en cooldown se salta al elegir destino; una desactualizada (le
 // faltan mutaciones y aun no se recarga) o que esta recargando tampoco debe
 // atenderse: su catalogo esta incompleto y devolveria diagnosticos incompletos.
-// Pero si TODAS quedan fuera se intentan igual (mejor intentarlo que devolver
-// 502 sin probar). La recarga de una desactualizada no depende de que le caiga
-// trafico: la dispara revisarReplicas(), que sondea /health.
+// La recarga de una desactualizada no depende de que le caiga trafico: la dispara
+// revisarReplicas(), que sondea /health.
+//
+// NO mira la confirmacion de identidad (ver identidadFresca): lo que decide el
+// reparto es ordenReplicas(). Aqui se queda como el estado "grueso" de la replica
+// (en pie y con el catalogo al dia) porque tambien alimenta el conteo publico de
+// /health, y ese conteo no debe desplomarse a 0 mientras solo pasa tiempo sin
+// confirmar: un balanceador que lo lea no debe sacar la API de rotacion por eso.
 function replicaSana(base) {
   const e = estadoReplicas.get(base);
   return Date.now() >= e.fallandoHasta && !e.desactualizada && !e.resincronizando;
 }
 
-// Orden de intento: desde el cursor (round-robin) y con las sanas primero.
-function ordenReplicas() {
-  revisarReplicas();
+// Identidad confirmada hace poco por un sondeo de /health. Una replica sin esa
+// confirmacion reciente pudo reiniciarse y quedar con el catalogo vacio sin que el
+// gateway viera ningun fallo, asi que no se le manda diagnostico hasta sondearla.
+function identidadFresca(base) {
+  const e = estadoReplicas.get(base);
+  return Date.now() - e.identidadConfirmadaEn < PROLOG_RESYNC_MIN_INTERVAL_MS;
+}
+
+// Orden de intento: desde el cursor (round-robin), con las sanas primero y las
+// confirmadas pero en cooldown al final (reintento). Antes de decidir CONFIRMA, en
+// paralelo y con timeout corto, la identidad de las que la tengan vencida: una
+// replica reiniciada (mismo puerto, catalogo vacio, startupId nuevo) no debe servir
+// un diagnostico ni una vez. Nunca se incluye una sin confirmar.
+async function ordenReplicas() {
   const n = PROLOG_BASES.length;
   const rotadas = [];
   for (let i = 0; i < n; i += 1) rotadas.push(PROLOG_BASES[(cursorReplica + i) % n]);
   cursorReplica = (cursorReplica + 1) % n;
-  return [...rotadas.filter(replicaSana), ...rotadas.filter((b) => !replicaSana(b))];
+
+  const usable = (base) => {
+    const e = estadoReplicas.get(base);
+    return !e.desactualizada && !e.resincronizando && identidadFresca(base);
+  };
+  // Se sondean las que no se pueden usar por identidad sin confirmar Y las
+  // desactualizadas: en ambos casos el sondeo es lo que (a) confirma si sigue
+  // siendo la misma y (b) dispara su recarga, asi que sin el la replica no vuelve.
+  const porSondear = () =>
+    rotadas.filter((base) => {
+      const e = estadoReplicas.get(base);
+      return !e.resincronizando && (e.desactualizada || !identidadFresca(base));
+    });
+
+  // Se espera este sondeo (no es fire-and-forget): de su resultado depende a quien
+  // se puede mandar trafico. El minimo entre intentos por replica evita sondear en
+  // cada peticion una que sigue sin responder; se sondean TODAS a la vez, aunque con
+  // eso el reparto se quede un momento sin candidatas, porque un sondeo corto es
+  // mejor que servir el diagnostico de un motor vacio.
+  let pendientes = porSondear();
+  if (pendientes.length) await Promise.all(pendientes.map((base) => sondearIdentidad(base)));
+
+  // Si aun asi no quedo ninguna candidata, se insiste UNA vez sin el minimo: la
+  // confirmacion pudo vencer por un fallo puntual de la sonda, no por un reinicio, y
+  // no hay que devolver 502 sin haber vuelto a preguntar. Las que no confirmen
+  // quedan fuera igual.
+  if (!rotadas.some(usable)) {
+    pendientes = porSondear();
+    if (pendientes.length) await Promise.all(pendientes.map((base) => sondearIdentidad(base, true)));
+  }
+
+  return [
+    ...rotadas.filter((b) => usable(b) && replicaSana(b)),
+    ...rotadas.filter((b) => usable(b) && !replicaSana(b)),
+  ];
 }
 
 // Un unico sondeo cuando vence el cooldown, para que una replica desactualizada
@@ -146,7 +213,12 @@ function programarResync(base) {
 }
 
 function marcarReplicaCaida(base, err) {
-  tocarEstado(base, { fallandoHasta: Date.now() + PROLOG_REPLICA_COOLDOWN_MS });
+  // Cae: su identidad deja de estar confirmada. Hasta que un sondeo la vuelva a
+  // confirmar no debe entrar al reparto, ni siquiera como reintento.
+  tocarEstado(base, {
+    fallandoHasta: Date.now() + PROLOG_REPLICA_COOLDOWN_MS,
+    identidadConfirmadaEn: 0,
+  });
   programarResync(base);
   console.warn(
     `[prolog] Replica ${base} no respondio (${resumenError(err)}); fuera ${PROLOG_REPLICA_COOLDOWN_MS} ms`
@@ -186,9 +258,18 @@ function identidadCambio(base, healthJson) {
 // o su catalogo ya no coincide con lo cargado) queda desactualizada y se recarga
 // entera desde Mongo, la fuente de verdad: un reinicio rapido no se detecta por
 // fallos porque el gateway nunca llega a ver ninguno.
-function marcarReplicaViva(base, healthJson = {}) {
-  devolverAlReparto(base);
-  if (identidadCambio(base, healthJson)) tocarEstado(base, { desactualizada: true });
+//
+// `reincorporar` decide si ademas se la devuelve al reparto. Es true para un POST
+// suyo o un diagnostico servido (ya probo que sirve). Un sondeo de identidad pasa
+// false: /health solo dice que el proceso responde, no que atienda bien, y no debe
+// levantar el cooldown de una replica que acaba de cortar una respuesta.
+//
+// Devuelve true si la identidad quedo CONFIRMADA por esta llamada (respondio sin
+// cambio, o sin publicar identidad que comparar).
+function marcarReplicaViva(base, healthJson = {}, reincorporar = true) {
+  if (reincorporar) devolverAlReparto(base);
+  const cambio = identidadCambio(base, healthJson);
+  if (cambio) tocarEstado(base, { desactualizada: true, identidadConfirmadaEn: 0 });
   const estado = estadoReplicas.get(base);
   if (estado.desactualizada && !estado.resincronizando) {
     tocarEstado(base, { resincronizando: true });
@@ -196,36 +277,65 @@ function marcarReplicaViva(base, healthJson = {}) {
       tocarEstado(base, { resincronizando: false });
     });
   }
+  return !cambio;
 }
 
 // Lee /health de una replica y aplica lo leido. Se usa tras cada operacion que
 // cambia su catalogo (bootstrap, recarga, mutacion difundida) para dejar al dia el
 // startupId y el conteo de referencia; sin esto, una mutacion propia del gateway
 // pareceria un catalogo cambiado por fuera y recargaria la replica sin motivo.
-async function refrescarIdentidad(base) {
+//
+// Con `reincorporar` false (sondeo de identidad) no la devuelve al reparto y usa el
+// timeout corto del sondeo. Un /health respondido sin cambio de identidad deja
+// `identidadConfirmadaEn` al dia: es lo UNICO que confirma a la replica para el
+// reparto. Devuelve true en ese caso, false si no respondio o si su identidad cambio.
+async function refrescarIdentidad(base, reincorporar = true) {
+  const estado = estadoReplicas.get(base);
   try {
-    const r = await fetch(`${base}/health`, { signal: AbortSignal.timeout(PROLOG_TIMEOUT_MS) });
-    if (r.ok) marcarReplicaViva(base, await r.json().catch(() => ({})));
-  } catch {
-    // Sin respuesta: lo resuelve el proximo sondeo o el cooldown.
+    const r = await fetch(`${base}/health`, {
+      signal: AbortSignal.timeout(reincorporar ? PROLOG_TIMEOUT_MS : PROLOG_HEALTH_TIMEOUT_MS),
+    });
+    estado.errorSonda = null;
+    if (r.ok && marcarReplicaViva(base, await r.json().catch(() => ({})), reincorporar)) {
+      estado.identidadConfirmadaEn = Date.now();
+      return true;
+    }
+  } catch (e) {
+    // Sin respuesta: lo resuelve el proximo sondeo o el cooldown. Se guarda el error
+    // solo para que un 502 sin candidatas no pierda el codigo de red de la causa.
+    estado.errorSonda = e;
   }
+  return false;
+}
+
+// Sondeo de identidad de UNA replica, deduplicado y con un minimo entre intentos.
+// Si ya hay uno en vuelo se reutiliza; si el ultimo intento fue hace poco no se
+// repite (salvo `forzar`), para no sondear en cada peticion una replica que sigue
+// sin responder. Devuelve true solo si la identidad quedo confirmada AHORA.
+function sondearIdentidad(base, forzar = false) {
+  const estado = estadoReplicas.get(base);
+  if (estado.sondaIdentidad) return estado.sondaIdentidad;
+  if (estado.resincronizando) return Promise.resolve(false);
+  if (!forzar && Date.now() - estado.ultimoIntentoResync < PROLOG_RESYNC_MIN_INTERVAL_MS) {
+    return Promise.resolve(false);
+  }
+  estado.ultimoIntentoResync = Date.now();
+  const sonda = refrescarIdentidad(base, false).finally(() => {
+    estado.sondaIdentidad = null;
+  });
+  estado.sondaIdentidad = sonda;
+  return sonda;
 }
 
 // Sondea /health de TODAS las replicas, en segundo plano y con un minimo entre
-// intentos por replica, para (a) recargar las desactualizadas y (b) descubrir un
-// reinicio del motor entre dos consultas: el startupId que publica /health cambia
-// aunque el gateway no viera ningun fallo. Se invoca desde ordenReplicas (trafico
-// del gateway), desde el timer que vence el cooldown y desde la vista de
-// administrador; nunca bloquea a quien la llama.
+// intentos por replica (dentro de sondearIdentidad), para (a) recargar las
+// desactualizadas y (b) descubrir un reinicio del motor entre dos consultas: el
+// startupId que publica /health cambia aunque el gateway no viera ningun fallo. Se
+// invoca desde el timer que vence el cooldown y desde la vista de administrador;
+// nunca bloquea a quien la llama. Las peticiones del gateway van por ordenReplicas,
+// que si espera el sondeo.
 function revisarReplicas() {
-  const ahora = Date.now();
-  for (const base of PROLOG_BASES) {
-    const estado = estadoReplicas.get(base);
-    if (estado.resincronizando) continue;
-    if (ahora - estado.ultimoIntentoResync < PROLOG_RESYNC_MIN_INTERVAL_MS) continue;
-    estado.ultimoIntentoResync = ahora;
-    refrescarIdentidad(base);
-  }
+  for (const base of PROLOG_BASES) sondearIdentidad(base);
 }
 
 // Sonda /health de TODAS las replicas en paralelo, con timeout corto, para que la
@@ -248,7 +358,9 @@ async function sondearReplicas() {
       }
       if (r && r.ok) {
         const j = await r.json().catch(() => ({}));
-        if (identidadCambio(base, j)) tocarEstado(base, { desactualizada: true });
+        if (identidadCambio(base, j)) {
+          tocarEstado(base, { desactualizada: true, identidadConfirmadaEn: 0 });
+        }
         devolverAlReparto(base);
         tocarEstado(base, { sondeoFallido: false });
       } else {
@@ -329,7 +441,7 @@ function resumenError(err) {
 // repetirse a ciegas, van por difundirAReplicas y no reintentan.
 async function pedirAMotor(ruta, init) {
   let ultimoError;
-  for (const base of ordenReplicas()) {
+  for (const base of await ordenReplicas()) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), PROLOG_TIMEOUT_MS);
     try {
@@ -345,6 +457,11 @@ async function pedirAMotor(ruta, init) {
       clearTimeout(timeout);
     }
   }
+  // Sin ninguna candidata: o cayeron todas, o ninguna tiene la identidad confirmada
+  // (y entonces el fallo lo dejo el sondeo, no una peticion). En el segundo caso la
+  // causa es el error de red del ultimo sondeo, para que el 502 siga distinguiendose
+  // de un 500 real en el log.
+  ultimoError ??= PROLOG_BASES.map((b) => estadoReplicas.get(b).errorSonda).find(Boolean);
   throw Object.assign(new Error('No se pudo contactar al motor Prolog', { cause: ultimoError }), {
     status: 502,
   });

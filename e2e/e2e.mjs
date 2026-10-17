@@ -3010,6 +3010,151 @@ test('36c | Timeout puntual con el mismo arranque: no recarga la réplica', asyn
   }
 });
 
+test('36d | Invariante: una réplica que se reinicia en silencio no sirve ni un diagnóstico', async () => {
+  const puertoFalsa = PUERTO_PROLOG + 10;
+  const puertoApi = PUERTO_API + 25;
+  const { est, hits, server } = replicaDeBolsillo();
+  await new Promise((r) => server.listen(puertoFalsa, r));
+
+  const base = `http://localhost:${puertoApi}`;
+  const cookie = await sesionGateway();
+  // Catálogo no vacío antes de arrancar el gateway: así la réplica de bolsillo
+  // arranca SANA y sirviendo, y su reinicio en vacío se nota en el conteo.
+  const creada = await gateway('/api/fallas', {
+    method: 'POST',
+    cookie,
+    body: {
+      nombre: 'Invariante', sintomas: ['invariante_e2e'],
+      vehiculo: { marca: 'gen', modelo: 'gen', transmision: 'desconocida' },
+      causas: ['causa invariante'], procedimiento: ['paso invariante'],
+      precioMin: 100, precioMax: 200, urgencia: 'media', confianzaDato: 'media',
+    },
+  });
+  assert.equal(creada.status, 201, 'la falla de contexto debe crearse');
+  const fallaId = (await creada.json())._id;
+
+  const proc = arrancarGatewayDeBolsillo(puertoApi, puertoFalsa);
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-invariante.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-invariante.err'), 'w') }));
+
+  try {
+    await sondeo(`${base}/api/config/tipo-cambio`, { timeout: 60000 });
+    const diag = () => peticionGateway(base, '/api/prolog/api/diagnostico', { method: 'POST', cookie, body: DIAG_VACIO });
+
+    // Arranca SANA: la falla se le cargó en el bootstrap.
+    for (let i = 0; i < 50 && est.count < 1; i++) await sleep(100);
+    assert.ok(est.count >= 1, 'el bootstrap de arranque debe cargar la falla en la réplica');
+
+    // Y sirviendo: el reparto le manda algún diagnóstico (la otra réplica también está).
+    for (let i = 0; i < 6 && hits.diagnostico < 1; i++) assert.equal((await diag()).status, 200);
+    assert.ok(hits.diagnostico >= 1, 'con la réplica sana el reparto la usa');
+
+    // El proceso muere y vuelve con OTRO arranque y el catálogo VACÍO, pero sin
+    // dejar de responder: el gateway no falla ninguna petición. Su recarga todavía no
+    // está disponible, así que sigue sin catálogo mientras se comprueba el invariante.
+    const antesDiag = hits.diagnostico;
+    est.startupId = 2;
+    est.count = 0;
+    est.bootstrapOk = false;
+    // Deja vencer el mínimo entre sondeos: la confirmación de identidad caduca y la
+    // próxima consulta TIENE que sondearla antes de decidir.
+    await sleep(700);
+
+    // Desde la PRIMERA consulta, ninguna debe servirla la réplica obsoleta; todas
+    // responden 200 (las atiende la réplica sana).
+    for (let i = 0; i < 8; i++) {
+      const res = await diag();
+      assert.equal(res.status, 200, 'la réplica sana debe atender');
+      assert.ok(Array.isArray((await res.json()).fallas), 'la respuesta viene del motor, no del gateway');
+    }
+    assert.equal(
+      hits.diagnostico,
+      antesDiag,
+      'la réplica reiniciada (identidad cambiada) no debe servir ni un diagnóstico'
+    );
+    let estadoTrasReinicio = null;
+    for (let i = 0; i < 20; i++) {
+      estadoTrasReinicio = await estadoDeReplica(base, cookie, 'motor-2');
+      if (estadoTrasReinicio === 'desactualizada') break;
+      await sleep(100);
+    }
+    assert.equal(
+      estadoTrasReinicio,
+      'desactualizada',
+      'el reinicio silencioso debe dejarla fuera hasta recargarse'
+    );
+
+    // Y en cuanto su recarga está disponible, se recarga sola y vuelve al reparto.
+    const antesBootstrap = hits.bootstrap;
+    est.bootstrapOk = true;
+    let estadoFinal = null;
+    for (let i = 0; i < 60; i++) {
+      estadoFinal = await estadoDeReplica(base, cookie, 'motor-2');
+      if (estadoFinal === 'sana' && hits.bootstrap > antesBootstrap) break;
+      await sleep(200);
+    }
+    assert.equal(estadoFinal, 'sana', 'la réplica reiniciada debe recargarse y volver a sanar');
+    assert.ok(hits.bootstrap > antesBootstrap, 'la recarga de la réplica reiniciada debe haber corrido');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+    server.closeAllConnections?.();
+    await new Promise((r) => server.close(r));
+    await gateway(`/api/fallas/${fallaId}`, { method: 'DELETE', cookie });
+  }
+});
+
+test('36e | Reinicio sin tráfico de por medio: se detecta entre dos consultas separadas más de 5 s', async () => {
+  const puertoFalsa = PUERTO_PROLOG + 11;
+  const puertoApi = PUERTO_API + 26;
+  const { est, hits, server } = replicaDeBolsillo();
+  await new Promise((r) => server.listen(puertoFalsa, r));
+
+  const base = `http://localhost:${puertoApi}`;
+  // Ventana por defecto (5000 ms), la de producción: es lo que hace que "más de 5 s
+  // sin tráfico" importe. Con la ventana corta el caso ya lo cubre 36b/36d.
+  const proc = arrancarGatewayDeBolsillo(puertoApi, puertoFalsa, { PROLOG_RESYNC_MIN_INTERVAL_MS: '5000' });
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('api-sin-trafico.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('api-sin-trafico.err'), 'w') }));
+
+  try {
+    await sondeo(`${base}/api/config/tipo-cambio`, { timeout: 60000 });
+    const cookie = await sesionGateway();
+    const diag = () => peticionGateway(base, '/api/prolog/api/diagnostico', { method: 'POST', cookie, body: DIAG_VACIO });
+    for (let i = 0; i < 50 && hits.bootstrap < 1; i++) await sleep(100);
+
+    const q1 = await diag();
+    assert.equal(q1.status, 200, 'la primera consulta debe responder 200');
+    const q1b = await diag();
+    assert.equal(q1b.status, 200, 'la segunda consulta debe responder 200');
+    // Con la réplica sana el reparto la usa (round-robin entre las dos).
+    const antes = hits.diagnostico;
+    assert.ok(antes >= 1, 'con la réplica sana el reparto le manda diagnósticos');
+
+    // Sin NINGUNA otra petición, el proceso se reinicia (mismo puerto, otro arranque,
+    // catálogo vacío). Sólo la consulta siguiente puede delatarlo, y su sondeo de
+    // identidad es lo que impide que la sirva la réplica obsoleta.
+    est.startupId = 2;
+    est.count = 0;
+    await sleep(5500);
+    const q2 = await diag();
+    assert.equal(q2.status, 200, 'la segunda consulta debe responder 200');
+    assert.equal(hits.diagnostico, antes, 'la réplica reiniciada no debe servir la consulta');
+
+    // El sondeo que dispara esa misma consulta la manda a recargar.
+    let estadoFinal = null;
+    for (let i = 0; i < 60; i++) {
+      estadoFinal = await estadoDeReplica(base, cookie, 'motor-2');
+      if (estadoFinal === 'sana') break;
+      await sleep(200);
+    }
+    assert.equal(estadoFinal, 'sana', 'tras recargar debe volver a sanar');
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+    server.closeAllConnections?.();
+    await new Promise((r) => server.close(r));
+  }
+});
+
 // ---------------------------------------------------------------------------
 // 2.4 Sin MOTOR_TOKEN no se arranca en producción
 // ---------------------------------------------------------------------------
