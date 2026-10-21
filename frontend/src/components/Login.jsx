@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { apiFetch } from '../lib/api.js';
 
@@ -8,6 +8,12 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Mientras no hay sesion la aplicacion no pinta el shell, asi que el titulo de
+  // la pestaña se queda aqui: es el de este formulario.
+  useEffect(() => {
+    document.title = 'Car Care System | Iniciar sesión';
+  }, []);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -28,8 +34,8 @@ export default function Login() {
   return (
     <div className="login-shell">
       <form className="card login-card" onSubmit={handleSubmit}>
-        <h1>Sistema Car Care</h1>
-        <p className="login-subtitle">Taller Mecanico</p>
+        <h1>Car Care System</h1>
+        <p className="login-subtitle">Bienvenido</p>
         <label htmlFor="login-usuario">Usuario</label>
         <input
           id="login-usuario"

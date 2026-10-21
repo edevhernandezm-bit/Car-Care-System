@@ -2,13 +2,7 @@ import { useState } from 'react';
 
 import { useAuth } from '../context/AuthContext.jsx';
 import { apiFetch } from '../lib/api.js';
-
-const ROLES = [
-  { valor: 'administrador_mecanico', etiqueta: 'Administrador / Mecánico' },
-  { valor: 'estudiante_mecanica', etiqueta: 'Estudiante de Mecánica' },
-];
-
-const etiquetaRol = (rol) => ROLES.find((r) => r.valor === rol)?.etiqueta ?? rol;
+import { ROLES, etiquetaRol } from '../lib/roles.js';
 
 export default function Perfil() {
   const { user, updateUser } = useAuth();

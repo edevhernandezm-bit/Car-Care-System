@@ -284,22 +284,6 @@ h4 {
   margin-bottom: 40px;
 }
 
-.brand-icon {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 52px;
-  height: 52px;
-  border-radius: var(--radius-search);
-  background: var(--sidebar-icon-bg);
-  color: var(--sidebar-icon-fg);
-}
-
-.brand-icon svg {
-  width: 28px;
-  height: 28px;
-}
-
 .brand-name {
   margin: 0;
   font-family: var(--font-display);
@@ -1557,18 +1541,6 @@ h4 {
     gap: 12px;
   }
 
-  .brand-icon {
-    width: 42px;
-    height: 42px;
-    border-radius: var(--radius-input);
-  }
-
-  /* El icono ya no es un emoji: su tamano lo fija el SVG, no font-size. */
-  .brand-icon svg {
-    width: 22px;
-    height: 22px;
-  }
-
   .brand-name {
     font-size: 1.05rem;
   }
@@ -1858,6 +1830,7 @@ h4 {
   margin: 0;
   font-family: var(--font-display);
   font-size: 1.6rem;
+  text-align: center;
 }
 
 .login-subtitle {
@@ -1866,6 +1839,7 @@ h4 {
   font-size: 0.9rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
+  text-align: center;
 }
 
 .login-card label {

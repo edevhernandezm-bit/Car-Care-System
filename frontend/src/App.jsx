@@ -17,6 +17,7 @@ import Resultados from './components/Resultados.jsx';
 import { useCatalogosIngeniero } from './hooks/useCatalogosIngeniero.js';
 import { diagnosticar, guardarDiagnostico, obtenerTipoCambio } from './lib/api.js';
 import { mapearProlog } from './lib/diagnostico.js';
+import { etiquetaRol } from './lib/roles.js';
 
 // El menu, el encabezado de la pagina y el cuerpo se leen de la misma lista. Con
 // las secciones escritas en tres sitios, agregar una era cambiar tres ramas y
@@ -105,24 +106,6 @@ const fechaHoy = new Date().toLocaleDateString('es-ES', {
 // sistema, asi que el mismo caracter cambia de forma entre Windows, macOS y
 // Android, y no se puede controlar con tokens de color. Ademas son texto, no
 // graficos, y un lector de pantalla los anuncia en voz alta.
-function IconoLlave({ className }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-    </svg>
-  );
-}
-
 function IconoLupa({ className }) {
   return (
     <svg
@@ -191,6 +174,13 @@ export default function App() {
   useEffect(() => {
     if (!mostrarBusqueda) setSearchQuery('');
   }, [mostrarBusqueda]);
+
+  // El titulo de la pestaña sigue a la seccion visible. Se reusa `seccion.titulo`
+  // en vez de una segunda lista de nombres: el menu, el encabezado y la pestaña
+  // ya salen todos de SECCIONES.
+  useEffect(() => {
+    document.title = `Car Care System | ${seccion.titulo}`;
+  }, [seccion.titulo]);
 
   const registrarVehiculo = (vehiculo) => {
     setVehiculoActual(vehiculo);
@@ -310,15 +300,12 @@ export default function App() {
       <div className="app-shell">
         <aside className="sidebar">
           <div className="brand">
-            <span className="brand-icon">
-              <IconoLlave />
-            </span>
             <div>
               {/* No es un encabezado: el unico h1 de la pagina es el nombre de la
                   aplicacion en la barra superior. Dos h1 romperian el esquema
                   que un lector de pantalla usa para navegar la pagina. */}
-              <p className="brand-name">Administrador</p>
-              <span>Taller Mecánico</span>
+              <p className="brand-name">{user.nombre}</p>
+              <span>{etiquetaRol(user.role)}</span>
             </div>
           </div>
           <nav className="menu" aria-label="Secciones del sistema">
@@ -342,7 +329,7 @@ export default function App() {
           <header className="topbar">
             <div>
               <p className="topbar-label">Bienvenido de nuevo</p>
-              <h1>Sistema Car Care</h1>
+              <h1>Car Care System</h1>
             </div>
             <div className="topbar-actions">
               <p className="topbar-date">{fechaHoy}</p>
