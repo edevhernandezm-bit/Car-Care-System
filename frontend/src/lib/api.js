@@ -40,8 +40,8 @@ export async function apiFetch(ruta, options = {}) {
 // `signal` es el AbortSignal que react-query aborta al desmontar el consumidor.
 export async function cargarCatalogosIngeniero(signal) {
   const [sRes, fRes] = await Promise.all([
-    fetch(PROLOG_SINTOMAS_URL, { signal }),
-    fetch(PROLOG_FALLAS_URL, { signal }),
+    fetch(PROLOG_SINTOMAS_URL, { signal, credentials: 'same-origin' }),
+    fetch(PROLOG_FALLAS_URL, { signal, credentials: 'same-origin' }),
   ]);
   if (!sRes.ok || !fRes.ok) throw new Error('El motor no responde');
 
@@ -52,6 +52,7 @@ export async function cargarCatalogosIngeniero(signal) {
 export async function diagnosticar(vehiculo, sintomas) {
   const res = await fetch(PROLOG_URL, {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...vehiculo, sintomas }),
   });
@@ -90,7 +91,7 @@ export function normalizarStatsCerteza(data) {
 }
 
 export async function obtenerStatsCerteza(signal) {
-  const res = await fetch(API_STATS_CERTEZA, { signal });
+  const res = await fetch(API_STATS_CERTEZA, { signal, credentials: 'same-origin' });
   if (!res.ok) throw new Error('No se pudieron consultar las estadísticas');
   return normalizarStatsCerteza(await res.json());
 }
@@ -130,6 +131,7 @@ export function cuerpoDiagnostico({ vehiculo, sintomas, fallas, observaciones })
 export function guardarDiagnostico(diagnostico) {
   return fetch(API_DIAGNOSTICOS, {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cuerpoDiagnostico(diagnostico)),
   })
@@ -141,7 +143,7 @@ export function guardarDiagnostico(diagnostico) {
 // ya lo devuelve ordenado y acotado (ultimos 100): la vista no reordena ni
 // recorta, solo pinta. Cada documento trae sus observaciones congeladas.
 export async function obtenerHistorial(signal) {
-  const res = await fetch(API_DIAGNOSTICOS, { signal });
+  const res = await fetch(API_DIAGNOSTICOS, { signal, credentials: 'same-origin' });
   if (!res.ok) throw new Error('No se pudo consultar el historial');
   return res.json();
 }
