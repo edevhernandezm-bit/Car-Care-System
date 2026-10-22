@@ -10,8 +10,9 @@ const queryClient = new QueryClient({
     queries: {
       // Los catálogos son la única fuente de verdad pero no cambian durante la
       // sesión: se descargan una vez y no se reintentan ni refrescan solos, para
-      // que el aviso de "motor no disponible" aparezca de inmediato en lugar de
-      // dejar al usuario mirando un "conectando..." que no termina.
+      // que un fallo real del motor (no un 401 por falta de sesión: la consulta
+      // espera a tenerla, ver useCatalogosIngeniero) se vea de inmediato en vez
+      // de dejar al usuario mirando un "conectando..." que no termina.
       staleTime: Infinity,
       retry: false,
       refetchOnWindowFocus: false,
