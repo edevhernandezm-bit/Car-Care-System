@@ -6,6 +6,7 @@ COPY backend/package.json backend/package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY backend/server.js ./server.js
+COPY backend/tickets ./tickets
 
 ENV NODE_ENV=production
 ENV PORT=5000

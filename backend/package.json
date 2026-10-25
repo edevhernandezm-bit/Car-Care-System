@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch --env-file=.env server.js",
+    "test:tickets": "node --test \"tickets/*.test.js\"",
     "test": "node --test ../e2e/e2e.mjs"
   },
   "type": "commonjs",
