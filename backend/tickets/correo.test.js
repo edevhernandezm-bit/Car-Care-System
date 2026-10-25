@@ -32,6 +32,35 @@ test('la plantilla no deja pasar HTML del cliente', () => {
   assert.equal(subject.includes('\n'), false);
 });
 
+test('rotula la tasa estimada e incluye su fecha', () => {
+  for (const fuente of ['constante', 'estimada']) {
+    const { html, text } = plantillaCotizacion({
+      nombre: 'Ana',
+      enlace: 'https://car-care.test/cotizacion#abc',
+      resumen: {
+        vehiculo: 'Toyota',
+        fallas: ['Frenos'],
+        totales: '100 - 200 MXN',
+        tipoCambio: { usd_mxn: 18.3, fecha: '2026-10-25', fuente },
+      },
+    });
+    assert.match(html, /Tipo de cambio estimado/);
+    assert.match(html, /2026-10-25/);
+    assert.match(text, /Tipo de cambio estimado/);
+  }
+});
+
+test('no rotula una tasa de mercado', () => {
+  const { html } = plantillaCotizacion({
+    nombre: 'Ana',
+    enlace: 'https://car-care.test/cotizacion#abc',
+    resumen: {
+      tipoCambio: { usd_mxn: 18.3, fecha: '2026-10-25', fuente: 'frankfurter' },
+    },
+  });
+  assert.doesNotMatch(html, /Tipo de cambio estimado/);
+});
+
 test('rechaza un enlace que no sea http(s)', () => {
   assert.throws(
     () => plantillaCotizacion({ nombre: 'Ana', enlace: 'javascript:alert(1)', resumen: {} }),

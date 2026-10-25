@@ -87,6 +87,37 @@ test('nunca acepta tokenHash nulo ni vacio', async () => {
   assert.equal(await errores(conHash), null);
 });
 
+test('el snapshot conserva moneda y costos de origen', async () => {
+  const ticket = ticketValido({
+    fallas: [
+      {
+        falla: 'cvt_nissan_altima',
+        nombre: 'CVT Altima',
+        precioMinMXN: 54900,
+        precioMaxMXN: 86010,
+        monedaOrigen: 'USD',
+        costoMinOrigen: 3000,
+        costoMaxOrigen: 4700,
+      },
+    ],
+  });
+  assert.equal(await errores(ticket), null);
+
+  const sinMoneda = ticketValido({
+    fallas: [
+      {
+        falla: 'cvt_nissan_altima',
+        nombre: 'CVT Altima',
+        precioMinMXN: 54900,
+        precioMaxMXN: 86010,
+        costoMinOrigen: 3000,
+        costoMaxOrigen: 4700,
+      },
+    ],
+  });
+  assert.ok((await errores(sinMoneda))['fallas.0.monedaOrigen']);
+});
+
 test('el indice de tokenHash es unico y parcial', () => {
   const indice = Ticket.schema.indexes().find(([campos]) => campos.tokenHash === 1);
   assert.ok(indice, 'falta el indice de tokenHash');

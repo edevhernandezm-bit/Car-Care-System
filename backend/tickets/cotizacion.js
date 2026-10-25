@@ -10,6 +10,48 @@ function aCentavos(valor, campo) {
   return Math.round(n * 100);
 }
 
+// Traduce una falla del catalogo del motor a precios MXN y conserva el dato
+// original para que el snapshot del ticket sea auditable. La moneda del motor
+// llega como 'mxn'/'usd' (estaticas) o 'MXN' (dinamicas): se normaliza.
+function precioCatalogoEnMXN(falla, tipoCambio) {
+  if (typeof falla?.costo_min !== 'number' || typeof falla?.costo_max !== 'number') {
+    throw new Error('El catalogo trae costos invalidos.');
+  }
+  const min = falla.costo_min;
+  const max = falla.costo_max;
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min < 0 || max < 0 || min > max) {
+    throw new Error('El catalogo trae costos invalidos.');
+  }
+
+  const moneda = String(falla.moneda ?? '').trim().toLowerCase();
+  if (moneda === 'mxn') {
+    return {
+      monedaOrigen: 'MXN',
+      costoMinOrigen: min,
+      costoMaxOrigen: max,
+      precioMinMXN: min,
+      precioMaxMXN: max,
+    };
+  }
+  if (moneda === 'usd') {
+    const usd = Number(tipoCambio?.usd_mxn);
+    if (!Number.isFinite(usd) || usd <= 0) {
+      throw new Error('El tipo de cambio no es utilizable.');
+    }
+    // Un solo redondeo por extremo: se pasa de USD a centavos de MXN directo.
+    const minCentavos = Math.round(min * usd * 100);
+    const maxCentavos = Math.round(max * usd * 100);
+    return {
+      monedaOrigen: 'USD',
+      costoMinOrigen: min,
+      costoMaxOrigen: max,
+      precioMinMXN: minCentavos / 100,
+      precioMaxMXN: maxCentavos / 100,
+    };
+  }
+  throw new Error('La moneda del catalogo no es reconocida.');
+}
+
 function calcularCotizacion({ fallasSeleccionadas, fallasDiagnostico, tipoCambio } = {}) {
   if (!Array.isArray(fallasSeleccionadas) || fallasSeleccionadas.length === 0) {
     throw new Error('Selecciona al menos una falla para cotizar.');
@@ -74,4 +116,4 @@ function calcularCotizacion({ fallasSeleccionadas, fallasDiagnostico, tipoCambio
   };
 }
 
-module.exports = { LEYENDA, calcularCotizacion };
+module.exports = { LEYENDA, calcularCotizacion, precioCatalogoEnMXN };

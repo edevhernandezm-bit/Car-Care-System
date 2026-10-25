@@ -114,7 +114,15 @@ const mongoose = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
 
   apiProc = spawn(process.execPath, ['server.js'], {
     cwd: BACKEND_DIR,
-    env: { ...process.env, PORT: String(PUERTO_API), MONGO_URI: TEST_DB, MOTOR_TOKEN: MOTOR_TOKEN_E2E },
+    env: {
+      ...process.env,
+      PORT: String(PUERTO_API),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      TICKETS_ENABLED: '1',
+      MAIL_PROVIDER: 'fake',
+      PUBLIC_APP_URL: WEB_URL,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   apiProc.stdout.pipe(canalLogs('api', 'out'));
@@ -3407,4 +3415,200 @@ test('39 | API: el estado de las réplicas refleja la salud real, no solo el coo
     falsa.closeAllConnections();
     await new Promise((r) => falsa.close(r));
   }
+});
+
+// ---------------------------------------------------------------------------
+// Tickets: las rutas del mecanico y el correo fake. El interruptor apagado se
+// prueba en backend/tickets/rutas.test.js (montarTickets devuelve false), sin
+// levantar otro Prolog ni otro servidor.
+// ---------------------------------------------------------------------------
+async function sesionEstudianteTickets() {
+  const cuenta = { username: 'tickets_estudiante', password: 'clave-tickets-estudiante' };
+  await usuarioEnMongo({ ...cuenta, role: 'estudiante_mecanica', nombre: 'Estudiante Tickets' });
+  const ingreso = await api('/api/auth/login', { method: 'POST', body: cuenta });
+  assert.equal(ingreso.status, 200, 'la cuenta de estudiante debe poder iniciar sesión');
+  return ingreso.cookie;
+}
+
+async function crearTicketDePrueba(cookieAdmin, cookieDatos, correo) {
+  const diagnostico = await api('/api/diagnosticos', {
+    method: 'POST',
+    cookie: cookieDatos,
+    body: {
+      vehiculo: { marca: 'nissan', modelo: 'altima', anio: 2018 },
+      sintomas: ['ruido_motor'],
+      fallas: [
+        {
+          falla: 'cvt_nissan_altima',
+          certeza: 0.9,
+          nombre: 'CVT Altima',
+          urgencia: 'critica',
+          moneda: 'usd',
+        },
+      ],
+    },
+  });
+  assert.equal(diagnostico.status, 201, 'el diagnostico de la prueba debe guardarse');
+  const diag = diagnostico.body;
+
+  const respuesta = await api('/api/tickets', {
+    method: 'POST',
+    cookie: cookieAdmin,
+    body: {
+      diagnosticoId: diag._id,
+      fallasIds: ['cvt_nissan_altima'],
+      cliente: { nombre: 'Ana Ticket', correo },
+      // Un cliente no puede fijar precios: el servidor debe ignorarlos.
+      precios: [{ falla: 'cvt_nissan_altima', precioMinMXN: 1, precioMaxMXN: 1 }],
+      fallas: [{ falla: 'cvt_nissan_altima', precioMinMXN: 1, precioMaxMXN: 1 }],
+    },
+  });
+  return { diag, respuesta };
+}
+
+test('40 | Tickets: rol, catalogo del servidor, conversion con la tasa guardada y sin tokens', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+
+  const sinSesion = await api('/api/tickets');
+  assert.equal(sinSesion.status, 401, 'sin sesion no se listan tickets');
+
+  const estudiante = await api('/api/tickets', { cookie: cookieDatos });
+  assert.equal(estudiante.status, 403, 'un estudiante no administra tickets');
+
+  const correo = `tickets-${Date.now()}@example.com`;
+  const { diag, respuesta } = await crearTicketDePrueba(cookieAdmin, cookieDatos, correo);
+  assert.equal(respuesta.status, 201, 'el administrador debe poder crear el ticket');
+  const ticket = respuesta.body;
+
+  const tasa = diag.tipo_cambio.usd_mxn;
+  assert.ok(tasa > 0, 'el diagnostico debe traer su tasa congelada');
+  assert.equal(ticket.fallas[0].monedaOrigen, 'USD');
+  assert.equal(ticket.fallas[0].costoMinOrigen, 3000);
+  assert.equal(ticket.fallas[0].costoMaxOrigen, 4700);
+  assert.equal(
+    ticket.fallas[0].precioMinMXN,
+    Math.round(3000 * tasa * 100) / 100,
+    'el precio minimo sale del catalogo y de la tasa guardada, no del body'
+  );
+  assert.equal(
+    ticket.fallas[0].precioMaxMXN,
+    Math.round(4700 * tasa * 100) / 100,
+    'el precio maximo sale del catalogo y de la tasa guardada'
+  );
+  assert.notEqual(ticket.fallas[0].precioMinMXN, 1, 'los precios falsificados del body se ignoran');
+  assert.equal(JSON.stringify(ticket).includes('tokenHash'), false);
+  assert.equal(JSON.stringify(ticket).includes('tokenVenceEn'), false);
+
+  const lista = await api('/api/tickets?limit=999', { cookie: cookieAdmin });
+  assert.equal(lista.status, 200);
+  const paginados = lista.body;
+  assert.equal(paginados.limit, 100, 'la paginacion se acota a 100');
+  assert.equal(JSON.stringify(paginados).includes('tokenHash'), false);
+
+  const detalle = await api(`/api/tickets/${ticket._id}`, { cookie: cookieAdmin });
+  assert.equal(detalle.status, 200);
+  assert.equal(JSON.stringify(detalle.body).includes('tokenHash'), false);
+
+  const ajeno = await api('/api/tickets', {
+    method: 'POST',
+    cookie: cookieAdmin,
+    body: {
+      diagnosticoId: diag._id,
+      fallasIds: ['aceite_motor_bajo'],
+      cliente: { nombre: 'Ana Ticket', correo },
+    },
+  });
+  assert.equal(ajeno.status, 422, 'una falla ajena al diagnostico no se cotiza');
+});
+
+test('41 | Tickets: enviar, leer el enlace fake, reenviar tras fallo y no autorizar por PATCH', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const correo = `tickets-envio-${Date.now()}@example.com`;
+  const { respuesta } = await crearTicketDePrueba(cookieAdmin, cookieDatos, correo);
+  assert.equal(respuesta.status, 201);
+  const ticket = respuesta.body;
+
+  const enviado = await api(`/api/tickets/${ticket._id}/enviar`, {
+    method: 'POST',
+    cookie: cookieAdmin,
+  });
+  assert.equal(enviado.status, 200, 'el correo fake debe aceptar el envio');
+  const ticketEnviado = enviado.body;
+  assert.equal(ticketEnviado.envio.enviado, true);
+  assert.equal(JSON.stringify(ticketEnviado).includes('tokenHash'), false);
+
+  const require = createRequire(import.meta.url);
+  const m = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
+  await m.connect(TEST_DB);
+  let primero;
+  try {
+    primero = await m.connection
+      .collection('correos_prueba')
+      .find({ para: correo })
+      .sort({ creadoEn: -1 })
+      .toArray();
+  } finally {
+    await m.disconnect();
+  }
+  assert.equal(primero.length, 1, 'el fake debe guardar el correo en correos_prueba');
+  const enlace = /href="([^"]+)"/.exec(primero[0].html)?.[1];
+  assert.ok(enlace, 'el correo debe traer el enlace');
+  const token1 = new URL(enlace).hash.slice(1);
+  assert.ok(token1.length > 20, 'el enlace debe llevar el token en el fragmento');
+  assert.equal(enlace, `${WEB_URL}/cotizacion#${token1}`);
+
+  // Fallo simulado: el ticket queda como cotizacion enviada pero sin envio
+  // confirmado. El reintento debe regenerar el token y volver a enviar.
+  await m.connect(TEST_DB);
+  try {
+    await m.connection.collection('tickets').updateOne(
+      { _id: new m.Types.ObjectId(ticket._id) },
+      { $set: { 'envio.enviado': false, 'envio.ultimoError': 'fallo simulado' } }
+    );
+  } finally {
+    await m.disconnect();
+  }
+
+  const reenviado = await api(`/api/tickets/${ticket._id}/enviar`, {
+    method: 'POST',
+    cookie: cookieAdmin,
+  });
+  assert.equal(reenviado.status, 200, 'el reintento debe completarse');
+  const ticketReenviado = reenviado.body;
+  assert.equal(ticketReenviado.envio.enviado, true);
+  assert.equal(ticketReenviado.envio.intentos, 2);
+
+  await m.connect(TEST_DB);
+  let segundo;
+  try {
+    segundo = await m.connection
+      .collection('correos_prueba')
+      .find({ para: correo })
+      .sort({ creadoEn: -1 })
+      .toArray();
+  } finally {
+    await m.disconnect();
+  }
+  assert.equal(segundo.length, 2, 'el reintento debe guardar otro correo');
+  const token2 = new URL(/href="([^"]+)"/.exec(segundo[0].html)[1]).hash.slice(1);
+  assert.notEqual(token2, token1, 'el reintento debe reemplazar el token anterior');
+
+  const autorizar = await api(`/api/tickets/${ticket._id}/estado`, {
+    method: 'PATCH',
+    cookie: cookieAdmin,
+    body: { a: 'autorizado' },
+  });
+  assert.equal(autorizar.status, 400, 'autorizar es del cliente, no de estas rutas');
+
+  const cancelar = await api(`/api/tickets/${ticket._id}/estado`, {
+    method: 'PATCH',
+    cookie: cookieAdmin,
+    body: { a: 'cancelado' },
+  });
+  assert.equal(cancelar.status, 200);
+  const cancelado = cancelar.body;
+  assert.equal(cancelado.estado, 'cancelado');
+  assert.equal(JSON.stringify(cancelado).includes('tokenHash'), false);
 });

@@ -40,6 +40,9 @@ const fallaSchema = new mongoose.Schema(
     nombre: { type: String, required: true, trim: true },
     precioMinMXN: { type: Number, required: true, min: 0 },
     precioMaxMXN: { type: Number, required: true, min: 0 },
+    monedaOrigen: { type: String, enum: ['MXN', 'USD'], required: true },
+    costoMinOrigen: { type: Number, required: true, min: 0 },
+    costoMaxOrigen: { type: Number, required: true, min: 0 },
   },
   { _id: false }
 );

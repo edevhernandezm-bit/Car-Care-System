@@ -7,6 +7,10 @@ const bcrypt = require('bcryptjs');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
+const { leerConfig } = require('./tickets/config');
+const { crearMailer } = require('./tickets/correo');
+const { montarTickets } = require('./tickets/rutas');
+const { Ticket } = require('./tickets/modelo');
 
 const app = express();
 const PUERTO = process.env.PORT || 5000;
@@ -518,6 +522,16 @@ if (process.env.NODE_ENV === 'production' && !MOTOR_TOKEN) {
 const CABECERAS_MOTOR = MOTOR_TOKEN
   ? { 'Content-Type': 'application/json', 'X-Motor-Token': MOTOR_TOKEN }
   : { 'Content-Type': 'application/json' };
+
+let configTickets;
+let mailerTickets;
+try {
+  configTickets = leerConfig(process.env);
+  mailerTickets = crearMailer(configTickets);
+} catch (err) {
+  console.error(`[config] ${err.message}`);
+  process.exit(1);
+}
 
 // Allowlist de origenes. Acepta una lista separada por comas: CORS_ORIGIN=*
 // habilita cualquier origen (util solo en desarrollo).
@@ -1549,6 +1563,7 @@ app.post('/api/auth/login', registroIpDebug, limitadorLogin, async (req, res, ne
       username: usuario.username,
       nombre: usuario.nombre,
       role: usuario.role,
+      features: { tickets: configTickets.ticketsEnabled },
     });
   } catch (err) {
     next(err);
@@ -1574,6 +1589,7 @@ app.get('/api/auth/me', requireAuth, async (req, res, next) => {
       username: usuario.username,
       nombre: usuario.nombre,
       role: usuario.role,
+      features: { tickets: configTickets.ticketsEnabled },
     });
   } catch (err) {
     next(err);
@@ -1789,6 +1805,7 @@ app.put('/api/auth/me', requireAuth, async (req, res, next) => {
       username: cuenta.username,
       nombre: cuenta.nombre,
       role: cuenta.role,
+      features: { tickets: configTickets.ticketsEnabled },
     });
   } catch (err) {
     next(err);
@@ -1916,6 +1933,16 @@ app.delete('/api/fallas/:id', requireAdmin, async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+montarTickets(app, configTickets, {
+  Ticket,
+  Diagnostico,
+  requireAuth,
+  requireAdmin,
+  pedirAMotor,
+  cabecerasMotor: CABECERAS_MOTOR,
+  mailer: mailerTickets,
 });
 
 // --- 404 ---

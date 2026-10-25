@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { LEYENDA, calcularCotizacion } = require('./cotizacion');
+const { LEYENDA, calcularCotizacion, precioCatalogoEnMXN } = require('./cotizacion');
 
 const diagnostico = [
   { falla: 'bateria', nombre: 'Bateria' },
@@ -100,6 +100,51 @@ test('rechaza precios invalidos', () => {
   assert.throws(
     () => cotizar([{ falla: 'bateria', nombre: 'Bateria', precioMinMXN: NaN, precioMaxMXN: 2 }]),
     /no negativo/
+  );
+});
+
+test('convierte USD del catalogo a MXN con un solo redondeo por extremo', () => {
+  const resultado = precioCatalogoEnMXN(
+    { costo_min: 3000, costo_max: 4700, moneda: 'usd' },
+    { usd_mxn: 18.3 }
+  );
+  assert.deepEqual(resultado, {
+    monedaOrigen: 'USD',
+    costoMinOrigen: 3000,
+    costoMaxOrigen: 4700,
+    precioMinMXN: 54900,
+    precioMaxMXN: 86010,
+  });
+  assert.equal(resultado.precioMinMXN, Math.round(3000 * 18.3 * 100) / 100);
+});
+
+test('acepta MXN en mayusculas y rechaza monedas desconocidas', () => {
+  const mxn = precioCatalogoEnMXN(
+    { costo_min: 100, costo_max: 200, moneda: 'MXN' },
+    { usd_mxn: 18.3 }
+  );
+  assert.equal(mxn.monedaOrigen, 'MXN');
+  assert.equal(mxn.precioMinMXN, 100);
+
+  assert.throws(
+    () => precioCatalogoEnMXN({ costo_min: 1, costo_max: 2, moneda: 'eur' }, { usd_mxn: 18.3 }),
+    /moneda/
+  );
+});
+
+test('rechaza costos del catalogo no finitos, negativos o invertidos', () => {
+  const tasa = { usd_mxn: 18.3 };
+  for (const falla of [
+    { costo_min: NaN, costo_max: 2, moneda: 'mxn' },
+    { costo_min: -1, costo_max: 2, moneda: 'mxn' },
+    { costo_min: 300, costo_max: 200, moneda: 'mxn' },
+    { costo_min: '1', costo_max: 2, moneda: 'mxn' },
+  ]) {
+    assert.throws(() => precioCatalogoEnMXN(falla, tasa), /costos invalidos/);
+  }
+  assert.throws(
+    () => precioCatalogoEnMXN({ costo_min: 1, costo_max: 2, moneda: 'usd' }, { usd_mxn: 0 }),
+    /tipo de cambio/
   );
 });
 

@@ -32,12 +32,33 @@ function construirEnlace(publicAppUrl, token) {
 
 function normalizarResumen(resumen) {
   const datos = resumen || {};
+  const tipoCambio = datos.tipoCambio && typeof datos.tipoCambio === 'object'
+    ? {
+        usd_mxn: Number(datos.tipoCambio.usd_mxn),
+        fecha: String(datos.tipoCambio.fecha || ''),
+        fuente: String(datos.tipoCambio.fuente || ''),
+      }
+    : null;
   return {
     vehiculo: typeof datos.vehiculo === 'string' ? datos.vehiculo : '',
     fallas: Array.isArray(datos.fallas) ? datos.fallas.map((f) => String(f)) : [],
     totales: typeof datos.totales === 'string' ? datos.totales : '',
     leyenda: typeof datos.leyenda === 'string' ? datos.leyenda : LEYENDA,
+    tipoCambio,
   };
+}
+
+// La tasa estimada no es un dato de mercado: el correo debe decirlo y mostrar
+// la fecha con la que se congelo, no presentarla como una tasa exacta.
+function notaTipoCambio(tipoCambio) {
+  // 'constante' es la fuente real del respaldo (server.js); 'estimada' se acepta
+  // como etiqueta equivalente si el dato llega de otra fuente.
+  if (tipoCambio?.fuente !== 'constante' && tipoCambio?.fuente !== 'estimada') return '';
+  const fecha = tipoCambio.fecha || 'sin fecha';
+  if (Number.isFinite(tipoCambio.usd_mxn) && tipoCambio.usd_mxn > 0) {
+    return `Tipo de cambio estimado (${fecha}): 1 USD = ${tipoCambio.usd_mxn} MXN.`;
+  }
+  return `Tipo de cambio estimado (${fecha}).`;
 }
 
 function plantillaCotizacion({ nombre, enlace, resumen } = {}) {
@@ -51,6 +72,8 @@ function plantillaCotizacion({ nombre, enlace, resumen } = {}) {
   const fallas = datos.fallas.map((falla) => escaparHtml(falla));
   const totalesSeguro = escaparHtml(datos.totales);
   const leyendaSegura = escaparHtml(datos.leyenda);
+  const notaTasa = notaTipoCambio(datos.tipoCambio);
+  const notaTasaSegura = escaparHtml(notaTasa);
 
   const asunto = ['Cotizacion de reparacion', datos.vehiculo]
     .filter(Boolean)
@@ -64,6 +87,7 @@ function plantillaCotizacion({ nombre, enlace, resumen } = {}) {
     vehiculoSeguro ? `<p><strong>${vehiculoSeguro}</strong></p>` : '',
     fallas.length ? `<ul>${fallas.map((falla) => `<li>${falla}</li>`).join('')}</ul>` : '',
     totalesSeguro ? `<p>${totalesSeguro}</p>` : '',
+    notaTasa ? `<p>${notaTasaSegura}</p>` : '',
     `<p>${leyendaSegura}</p>`,
     `<p><a href="${enlaceSeguro}">Revisar y responder la cotizacion</a></p>`,
     '<p>El enlace vence en 72 horas y solo puede usarse una vez.</p>',
@@ -77,6 +101,7 @@ function plantillaCotizacion({ nombre, enlace, resumen } = {}) {
     datos.vehiculo,
     ...datos.fallas,
     datos.totales,
+    notaTasa,
     datos.leyenda,
     `Revisar y responder: ${enlace}`,
     'El enlace vence en 72 horas y solo puede usarse una vez.',
