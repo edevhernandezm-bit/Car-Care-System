@@ -5,3 +5,4 @@ frontend/dist
 scripts/resultados
 .cloud-state.json
 **/*.md
+**/*.test.js
