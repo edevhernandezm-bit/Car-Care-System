@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const { leerConfig } = require('./tickets/config');
 const { crearMailer } = require('./tickets/correo');
 const { montarTickets } = require('./tickets/rutas');
+const { montarTicketsPublico, manejarErrorPublico } = require('./tickets/publico');
 const { Ticket } = require('./tickets/modelo');
 
 const app = express();
@@ -625,6 +626,7 @@ app.use(express.json({ limit: '1mb' }));
 const RATE_LIMIT_VENTANA_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000);
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX ?? 300);
 const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX ?? 20);
+const PUBLIC_RATE_LIMIT_MAX = Number(process.env.PUBLIC_RATE_LIMIT_MAX ?? 20);
 
 // Interruptor SOLO PARA LOCAL: con DESACTIVAR_LIMITES=1 se saltan los dos
 // limitadores para poder medir carga sin que un 429 corte la corrida. En
@@ -662,6 +664,19 @@ const limitadorLogin = rateLimit({
 });
 
 app.use('/api', limitadorApi);
+
+// El router publico va antes de la sesion: el token viaja en el cuerpo y una
+// respuesta publica no debe poder crear cookie. El manejador de errores queda
+// pegado para que un JSON roto tampoco caiga en el handler global con detalle.
+const publicoMontado = montarTicketsPublico(app, configTickets, {
+  Ticket,
+  limite: PUBLIC_RATE_LIMIT_MAX,
+  ventanaMs: RATE_LIMIT_VENTANA_MS,
+  desactivarLimites: DESACTIVAR_LIMITES,
+});
+if (publicoMontado) {
+  app.use('/api/publico', manejarErrorPublico);
+}
 
 // DEBUG_IP=1 deja constancia del origen de cada intento de login para calibrar
 // TRUST_PROXY_HOPS y el protocolo una vez (que IP y que protocolo ve Express

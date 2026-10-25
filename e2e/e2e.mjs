@@ -122,6 +122,9 @@ const mongoose = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
       TICKETS_ENABLED: '1',
       MAIL_PROVIDER: 'fake',
       PUBLIC_APP_URL: WEB_URL,
+      // La suite comparte IP: el cupo publico normal (20) se agotaria entre
+      // pruebas. El 429 del router se mide en una instancia aislada.
+      PUBLIC_RATE_LIMIT_MAX: '1000',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -920,26 +923,6 @@ test('09l | API: el limitador corta con 429, el general y el del login', async (
   // Se prueba en instancias propias con un cupo diminuto: agotar el de la API
   // principal, que comparte IP con toda la suite, haria fallar al resto por un
   // motivo ajeno a lo que cada prueba mide.
-  const arrancarApi = async (puerto, extra) => {
-    const proc = spawn(process.execPath, ['server.js'], {
-      cwd: BACKEND_DIR,
-      env: {
-        ...process.env,
-        PORT: String(puerto),
-        MONGO_URI: TEST_DB,
-        MOTOR_TOKEN: MOTOR_TOKEN_E2E,
-        ...extra,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const log = (sufijo) => createWriteStream(null, { fd: openSync(logPath(`api-limite-${puerto}.${sufijo}`), 'w') });
-    proc.stdout.pipe(log('out'));
-    proc.stderr.pipe(log('err'));
-    // /health vive fuera de /api, asi que sondear el arranque no gasta cupo.
-    await sondeo(`http://localhost:${puerto}/health`, { timeout: 30000 });
-    return proc;
-  };
-
   // Cupo general: dos peticiones pasan y la tercera se corta.
   let proc = await arrancarApi(PUERTO_API + 9, { RATE_LIMIT_MAX: '2' });
   try {
@@ -1237,6 +1220,27 @@ async function api(ruta, { method = 'GET', body, cookie } = {}) {
     texto,
     cookie: setCookie ? setCookie.split(';')[0] : null,
   };
+}
+
+async function arrancarApi(puerto, extra = {}) {
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: {
+      ...process.env,
+      PORT: String(puerto),
+      MONGO_URI: TEST_DB,
+      MOTOR_TOKEN: MOTOR_TOKEN_E2E,
+      ...extra,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const log = (sufijo) =>
+    createWriteStream(null, { fd: openSync(logPath(`api-aislada-${puerto}.${sufijo}`), 'w') });
+  proc.stdout.pipe(log('out'));
+  proc.stderr.pipe(log('err'));
+  // /health vive fuera de /api, asi que sondear el arranque no gasta cupo.
+  await sondeo(`http://localhost:${puerto}/health`, { timeout: 30000 });
+  return proc;
 }
 
 async function usuarioEnMongo({ username, password, role, nombre }) {
@@ -3466,6 +3470,82 @@ async function crearTicketDePrueba(cookieAdmin, cookieDatos, correo) {
   return { diag, respuesta };
 }
 
+const ERROR_PUBLICO = { error: 'Enlace no válido o vencido' };
+
+function correoPublico(prefijo) {
+  return `publico-${prefijo}-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
+}
+
+async function ultimoCorreo(para) {
+  const require = createRequire(import.meta.url);
+  const m = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
+  await m.connect(TEST_DB);
+  try {
+    return await m.connection
+      .collection('correos_prueba')
+      .find({ para })
+      .sort({ creadoEn: -1 })
+      .next();
+  } finally {
+    await m.disconnect();
+  }
+}
+
+async function crearTicketEnviado(cookieAdmin, cookieDatos, correo) {
+  const { respuesta } = await crearTicketDePrueba(cookieAdmin, cookieDatos, correo);
+  assert.equal(respuesta.status, 201, 'el ticket de la prueba publica debe crearse');
+  const ticket = respuesta.body;
+
+  const enviado = await api(`/api/tickets/${ticket._id}/enviar`, {
+    method: 'POST',
+    cookie: cookieAdmin,
+  });
+  assert.equal(enviado.status, 200, 'el correo fake debe aceptar el envio publico');
+
+  const guardado = await ultimoCorreo(correo);
+  assert.ok(guardado, 'el fake debe guardar el correo publico');
+  const enlace = /href="([^"]+)"/.exec(guardado.html)?.[1];
+  assert.ok(enlace, 'el correo publico debe traer el enlace');
+  const token = new URL(enlace).hash.slice(1);
+  assert.equal(token.length, 43, 'el token del enlace debe tener 43 caracteres');
+  return { ticket, token };
+}
+
+async function actualizarTicket(id, update) {
+  const require = createRequire(import.meta.url);
+  const m = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
+  await m.connect(TEST_DB);
+  try {
+    await m.connection
+      .collection('tickets')
+      .updateOne({ _id: new m.Types.ObjectId(id) }, update);
+  } finally {
+    await m.disconnect();
+  }
+}
+
+async function ticketEnMongo(id) {
+  const require = createRequire(import.meta.url);
+  const m = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
+  await m.connect(TEST_DB);
+  try {
+    return await m.connection
+      .collection('tickets')
+      .findOne({ _id: new m.Types.ObjectId(id) });
+  } finally {
+    await m.disconnect();
+  }
+}
+
+async function postPublico(ruta, body, { rawBody, contentType = 'application/json' } = {}) {
+  const res = await fetch(`${API_URL}/api/publico/cotizacion/${ruta}`, {
+    method: 'POST',
+    headers: { 'Content-Type': contentType },
+    body: rawBody === undefined ? JSON.stringify(body) : rawBody,
+  });
+  return { status: res.status, texto: await res.text(), headers: res.headers };
+}
+
 test('40 | Tickets: rol, catalogo del servidor, conversion con la tasa guardada y sin tokens', async () => {
   const cookieAdmin = await sesionGateway();
   const cookieDatos = await sesionEstudianteTickets();
@@ -3611,4 +3691,223 @@ test('41 | Tickets: enviar, leer el enlace fake, reenviar tras fallo y no autori
   const cancelado = cancelar.body;
   assert.equal(cancelado.estado, 'cancelado');
   assert.equal(JSON.stringify(cancelado).includes('tokenHash'), false);
+});
+
+test('42 | Público: desconocido, vencido, reutilizado y formato inválido dan la misma respuesta', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+
+  const desconocido = await postPublico('consultar', { token: 'A'.repeat(43) });
+  const formatoInvalido = await postPublico('consultar', { token: 'no-es-un-token' });
+
+  const vencidoTicket = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('vencido')
+  );
+  await actualizarTicket(vencidoTicket.ticket._id, {
+    $set: { tokenVenceEn: new Date(Date.now() - 1000) },
+  });
+  const vencido = await postPublico('consultar', { token: vencidoTicket.token });
+
+  const reutilizadoTicket = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('reutilizado')
+  );
+  const decision = await postPublico('decidir', {
+    token: reutilizadoTicket.token,
+    decision: 'autorizar',
+  });
+  assert.equal(decision.status, 200, 'la primera decision debe ganar');
+  const reutilizado = await postPublico('consultar', { token: reutilizadoTicket.token });
+
+  const respuestas = [desconocido, formatoInvalido, vencido, reutilizado];
+  for (const respuesta of respuestas) {
+    assert.equal(respuesta.status, 404);
+    assert.equal(respuesta.texto, desconocido.texto, 'las cuatro respuestas deben ser identicas');
+    assert.deepEqual(JSON.parse(respuesta.texto), ERROR_PUBLICO);
+    assert.equal(respuesta.headers.get('cache-control'), 'no-store');
+    assert.equal(respuesta.headers.get('referrer-policy'), 'no-referrer');
+  }
+});
+
+test('43 | Público: consultar válido devuelve solo la lista blanca y no crea cookie', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const correo = correoPublico('consulta');
+  const { ticket, token } = await crearTicketEnviado(cookieAdmin, cookieDatos, correo);
+
+  const respuesta = await postPublico('consultar', { token });
+  assert.equal(respuesta.status, 200);
+  const cuerpo = JSON.parse(respuesta.texto);
+
+  assert.deepEqual(Object.keys(cuerpo).sort(), [
+    'cliente',
+    'fallas',
+    'leyenda',
+    'tasaEstimada',
+    'tipoCambio',
+    'totalMaxMXN',
+    'totalMaxUSD',
+    'totalMinMXN',
+    'totalMinUSD',
+    'vehiculo',
+    'vigenteHasta',
+  ]);
+  assert.deepEqual(Object.keys(cuerpo.vehiculo).sort(), ['anio', 'marca', 'modelo']);
+  assert.deepEqual(Object.keys(cuerpo.tipoCambio).sort(), ['fecha', 'fuente']);
+  assert.deepEqual(cuerpo.vehiculo, {
+    marca: ticket.vehiculo.marca,
+    modelo: ticket.vehiculo.modelo,
+    anio: ticket.vehiculo.anio,
+  });
+  assert.deepEqual(cuerpo.fallas, ticket.fallas.map((falla) => falla.nombre));
+  assert.equal(cuerpo.totalMinMXN, ticket.cotizacion.totalMinMXN);
+  assert.equal(cuerpo.totalMaxMXN, ticket.cotizacion.totalMaxMXN);
+  assert.equal(cuerpo.totalMinUSD, ticket.cotizacion.totalMinUSD);
+  assert.equal(cuerpo.totalMaxUSD, ticket.cotizacion.totalMaxUSD);
+  assert.equal(cuerpo.cliente.nombre, 'Ana', 'solo sale el primer nombre');
+  assert.equal(typeof cuerpo.tasaEstimada, 'boolean');
+  assert.ok(Number.isFinite(Date.parse(cuerpo.vigenteHasta)), 'vigenteHasta debe ser una fecha');
+  assert.equal(respuesta.headers.get('set-cookie'), null, 'la respuesta publica no debe crear cookie');
+  assert.equal(respuesta.headers.get('cache-control'), 'no-store');
+  assert.equal(respuesta.headers.get('referrer-policy'), 'no-referrer');
+
+  for (const prohibido of [correo, ticket._id, token, 'tokenHash', 'Ana Ticket', 'telefono']) {
+    assert.equal(respuesta.texto.includes(prohibido), false, `no debe salir ${prohibido}`);
+  }
+});
+
+test('44 | Público: diez decisiones simultáneas dejan una sola transición', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const { ticket, token } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('carrera')
+  );
+
+  const respuestas = await Promise.all(
+    Array.from({ length: 10 }, (_, i) =>
+      postPublico('decidir', {
+        token,
+        decision: i % 2 === 0 ? 'autorizar' : 'rechazar',
+      })
+    )
+  );
+
+  const ganadoras = respuestas.filter((respuesta) => respuesta.status === 200);
+  assert.equal(ganadoras.length, 1, 'exactamente una decision debe ganar');
+  for (const respuesta of respuestas.filter((item) => item.status !== 200)) {
+    assert.equal(respuesta.status, 404);
+    assert.deepEqual(JSON.parse(respuesta.texto), ERROR_PUBLICO);
+  }
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.ok(['autorizado', 'rechazado'].includes(doc.estado), 'el estado final debe ser coherente');
+  assert.equal(doc.tokenHash, undefined, 'el token se elimina al decidir');
+  assert.equal(
+    doc.historial.filter(
+      (paso) => paso.de === 'cotizacion_enviada' && ['autorizado', 'rechazado'].includes(paso.a)
+    ).length,
+    1,
+    'solo debe quedar una transicion de decision'
+  );
+  assert.equal(JSON.parse(ganadoras[0].texto).estado, doc.estado);
+});
+
+test('45 | Público: decidir tras vencer responde la genérica y deja vencido', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const { ticket, token } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('decidir-vencido')
+  );
+  await actualizarTicket(ticket._id, {
+    $set: { tokenVenceEn: new Date(Date.now() - 1000) },
+  });
+
+  const respuesta = await postPublico('decidir', { token, decision: 'rechazar' });
+  assert.equal(respuesta.status, 404);
+  assert.deepEqual(JSON.parse(respuesta.texto), ERROR_PUBLICO);
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.estado, 'vencido');
+  assert.equal(doc.tokenHash, undefined);
+  assert.equal(doc.historial.filter((paso) => paso.a === 'vencido').length, 1);
+});
+
+test('46 | Público: JSON roto y text/plain responden igual que un token inválido', async () => {
+  const invalido = await postPublico('consultar', { token: 'corto' });
+  const jsonRoto = await postPublico('consultar', null, {
+    rawBody: '{"token":',
+    contentType: 'application/json',
+  });
+  const textoPlano = await postPublico('consultar', null, {
+    rawBody: 'token=corto',
+    contentType: 'text/plain',
+  });
+
+  for (const respuesta of [invalido, jsonRoto, textoPlano]) {
+    assert.equal(respuesta.status, 404);
+    assert.equal(respuesta.texto, invalido.texto);
+    assert.equal(respuesta.headers.get('cache-control'), 'no-store');
+    assert.equal(respuesta.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(respuesta.headers.get('set-cookie'), null);
+  }
+});
+
+test('47 | Público: el limitador propio corta con 429 y conserva sus cabeceras', async () => {
+  const proc = await arrancarApi(PUERTO_API + 27, {
+    TICKETS_ENABLED: '1',
+    MAIL_PROVIDER: 'fake',
+    PUBLIC_APP_URL: WEB_URL,
+    PUBLIC_RATE_LIMIT_MAX: '2',
+    DESACTIVAR_LIMITES: '0',
+  });
+  try {
+    const ruta = `http://localhost:${PUERTO_API + 27}/api/publico/cotizacion/consultar`;
+    const pedir = () =>
+      fetch(ruta, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: 'corto' }),
+      });
+
+    for (let i = 1; i <= 2; i += 1) {
+      const respuesta = await pedir();
+      assert.equal(respuesta.status, 404, `la peticion ${i} debe pasar`);
+      assert.equal(respuesta.headers.get('cache-control'), 'no-store');
+      assert.equal(respuesta.headers.get('referrer-policy'), 'no-referrer');
+    }
+
+    const tercera = await pedir();
+    assert.equal(tercera.status, 429);
+    assert.equal(tercera.headers.get('cache-control'), 'no-store');
+    assert.equal(tercera.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(tercera.headers.get('set-cookie'), null);
+    assert.deepEqual(await tercera.json(), { error: 'Demasiadas peticiones. Intenta mas tarde.' });
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
+});
+
+test('48 | Público: el interruptor apagado deja /api/publico en el 404 global', async () => {
+  const proc = await arrancarApi(PUERTO_API + 28, {
+    TICKETS_ENABLED: '0',
+    MAIL_PROVIDER: 'ninguno',
+  });
+  try {
+    const respuesta = await fetch(`http://localhost:${PUERTO_API + 28}/api/publico/cotizacion/consultar`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'A'.repeat(43) }),
+    });
+    assert.equal(respuesta.status, 404);
+    assert.deepEqual(await respuesta.json(), { error: 'Ruta no encontrada' });
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
 });
