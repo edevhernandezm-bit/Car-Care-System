@@ -4740,11 +4740,10 @@ test('68 | Correo: el fake recibe precio final, leyenda y tildes en UTF-8', asyn
   assert.match(guardado.html, /<meta charset="UTF-8">/);
   assert.match(guardado.html, /Cotización de reparación/);
   assert.match(guardado.html, /vehículo/);
-  assert.match(guardado.html, /Precio final: \$1234\.50 MXN/);
-  assert.match(
-    guardado.html,
-    new RegExp(`aprox\\. \\$${ticket.cotizacion.precioFinalUSD.toFixed(2)} USD`)
-  );
+  assert.match(guardado.html, /Precio final: \$1,234\.50 MXN/);
+  assert.ok(guardado.html.includes(
+    `aprox. $${ticket.cotizacion.precioFinalUSD.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`
+  ));
   assert.match(guardado.html, /Incluye mano de obra/);
   assert.match(guardado.html, /aproximado, solo referencia/);
   assert.match(guardado.html, /El monto a pagar es en MXN/);
@@ -4753,7 +4752,7 @@ test('68 | Correo: el fake recibe precio final, leyenda y tildes en UTF-8', asyn
   assert.doesNotMatch(guardado.html, /No incluye mano de obra|Total estimado/);
 
   assert.match(guardado.text, /Cotización de reparación/);
-  assert.match(guardado.text, /Precio final: \$1234\.50 MXN/);
+  assert.match(guardado.text, /Precio final: \$1,234\.50 MXN/);
   assert.match(guardado.text, /Incluye mano de obra/);
   assert.equal(guardado.html.includes(`${WEB_URL}/cotizacion#${token}`), true);
 });

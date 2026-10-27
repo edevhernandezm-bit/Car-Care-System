@@ -80,6 +80,20 @@ function notaTipoCambio(tipoCambio) {
   return `${rotulo} (${fecha}).`;
 }
 
+function formatearMontoMXN(valor) {
+  return Number(valor).toLocaleString('es-MX', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatearMontoUSD(valor) {
+  return Number(valor).toLocaleString('es-MX', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 function plantillaCotizacion({ nombre, enlace, resumen } = {}) {
   if (typeof enlace !== 'string' || !/^https?:\/\//i.test(enlace)) {
     throw new Error('El enlace de la cotizacion no es valido.');
@@ -90,8 +104,8 @@ function plantillaCotizacion({ nombre, enlace, resumen } = {}) {
   const enlaceSeguro = escaparHtml(enlace);
   const fallas = datos.fallas.map((falla) => escaparHtml(falla));
   const precioSeguro = escaparHtml(
-    `Precio final: $${datos.precioFinalMXN.toFixed(2)} MXN ` +
-      `(aprox. $${datos.precioFinalUSD.toFixed(2)} USD).`
+    `Precio final: $${formatearMontoMXN(datos.precioFinalMXN)} MXN ` +
+      `(aprox. $${formatearMontoUSD(datos.precioFinalUSD)} USD).`
   );
   const avisoUSDSeguro = escaparHtml(
     'El monto a pagar es en MXN. El precio en USD es aproximado, solo referencia.'
@@ -119,7 +133,7 @@ function plantillaCotizacion({ nombre, enlace, resumen } = {}) {
     `<p>${leyendaSegura}</p>`,
     `<p>${avisoUSDSeguro}</p>`,
     notaTasa ? `<p>${notaTasaSegura}</p>` : '',
-    '<p>Puedes autorizar o rechazar la cotización. Si rechazas, indica un motivo.</p>',
+    '<p>Puedes autorizar o rechazar la cotización. Si rechazas, puedes indicar un motivo.</p>',
     `<p><a href="${enlaceSeguro}">Revisar y responder la cotización</a></p>`,
     '<p>El enlace vence en 72 horas y solo puede usarse una vez.</p>',
     '</body>',
@@ -134,12 +148,12 @@ function plantillaCotizacion({ nombre, enlace, resumen } = {}) {
     'Resumen de la cotización para tu vehículo:',
     datos.vehiculo,
     ...datos.fallas,
-    `Precio final: $${datos.precioFinalMXN.toFixed(2)} MXN ` +
-      `(aprox. $${datos.precioFinalUSD.toFixed(2)} USD).`,
+    `Precio final: $${formatearMontoMXN(datos.precioFinalMXN)} MXN ` +
+      `(aprox. $${formatearMontoUSD(datos.precioFinalUSD)} USD).`,
     'El monto a pagar es en MXN. El precio en USD es aproximado, solo referencia.',
     datos.leyenda,
     notaTasa,
-    'Puedes autorizar o rechazar la cotización. Si rechazas, indica un motivo.',
+    'Puedes autorizar o rechazar la cotización. Si rechazas, puedes indicar un motivo.',
     `Revisar y responder: ${enlace}`,
     'El enlace vence en 72 horas y solo puede usarse una vez.',
   ]

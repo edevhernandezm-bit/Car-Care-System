@@ -53,7 +53,7 @@ test('la plantilla muestra precio final, leyenda, tasa, fecha y aviso de USD', (
   });
 
   for (const contenido of [html, text]) {
-    assert.match(contenido, /Precio final: \$1500\.00 MXN \(aprox\. \$81\.97 USD\)/);
+    assert.match(contenido, /Precio final: \$1,500\.00 MXN \(aprox\. \$81\.97 USD\)/);
     assert.match(contenido, /Incluye mano de obra/);
     assert.match(contenido, /aproximado, solo referencia/);
     assert.match(contenido, /monto a pagar es en MXN/i);
@@ -61,12 +61,32 @@ test('la plantilla muestra precio final, leyenda, tasa, fecha y aviso de USD', (
     assert.match(contenido, /2026-10-25/);
     assert.doesNotMatch(contenido, /No incluye mano de obra/);
     assert.doesNotMatch(contenido, /Total estimado/);
+    assert.match(contenido, /Si rechazas, puedes indicar un motivo/);
   }
   assert.match(html, /<meta charset="UTF-8">/);
   assert.match(html, /Cotización de reparación/);
   assert.match(html, /vehículo/);
   assert.match(text, /Cotización de reparación/);
   assert.match(subject, /Cotización de reparación/);
+});
+
+test('formatea precios con separador de miles y dos decimales', () => {
+  const casos = [
+    { precioFinalMXN: 1500, precioFinalUSD: 81.97 },
+    { precioFinalMXN: 12345.5, precioFinalUSD: 674.62 },
+    { precioFinalMXN: 9999999.99, precioFinalUSD: 546448.36 },
+  ];
+  for (const resumen of casos) {
+    const { html, text } = plantillaCotizacion({
+      nombre: 'Ana',
+      enlace: 'https://car-care.test/cotizacion#abc',
+      resumen: resumenBase(resumen),
+    });
+    const mxn = resumen.precioFinalMXN.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const usd = resumen.precioFinalUSD.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    assert.match(html, new RegExp(`Precio final: \\$${mxn.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')} MXN \\(aprox\\. \\$${usd.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')} USD\\)`));
+    assert.match(text, new RegExp(`Precio final: \\$${mxn.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')} MXN \\(aprox\\. \\$${usd.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')} USD\\)`));
+  }
 });
 
 test('rechaza un resumen sin precio final válido', () => {
