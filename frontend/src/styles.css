@@ -2144,6 +2144,28 @@ h4 {
   font-weight: 600;
 }
 
+.cotizacion-publica {
+  width: min(100% - 32px, 720px);
+  margin: 48px auto;
+}
+
+.cotizacion-precio {
+  padding: 20px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-card);
+}
+
+.cotizacion-monto {
+  font-size: clamp(2rem, 6vw, 3rem);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.cotizacion-monto small { font-size: 1rem; }
+.cotizacion-opciones { display: grid; gap: 16px; border: 0; padding: 0; min-width: 0; }
+.cotizacion-opciones legend { font-weight: 700; margin-bottom: 12px; }
+.cotizacion-opciones label { cursor: pointer; }
+
 .historial-lista {
   display: grid;
   gap: 16px;
