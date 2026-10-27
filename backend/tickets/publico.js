@@ -4,10 +4,12 @@ const rateLimit = require('express-rate-limit');
 const { buscarPorToken, hashToken, estaVencido } = require('./token');
 const { cambiarEstado, vencerExpirada } = require('./transiciones');
 const { COMENTARIO_MAX, MOTIVOS_RECHAZO } = require('./modelo');
+const { LEYENDA_PRECIO_FINAL } = require('./cotizacion');
 
 const ERROR_GENERICO = Object.freeze({ error: 'Enlace no válido o vencido' });
 const ERROR_DATOS = Object.freeze({ error: 'Datos no válidos' });
 const ERROR_INTERNO = Object.freeze({ error: 'Error interno' });
+const LEYENDA_USD = 'Precio en USD aproximado, solo referencia; el monto a pagar es en MXN.';
 const DECISIONES = ['autorizar', 'rechazar'];
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 // C0 sin \n (permite salto de linea) y DEL.
@@ -70,16 +72,15 @@ function vistaTicketPublico(ticket) {
       anio: ticket.vehiculo?.anio ?? 0,
     },
     fallas: (ticket.fallas || []).map((falla) => String(falla.nombre ?? '')),
-    totalMinMXN: cotizacion.totalMinMXN,
-    totalMaxMXN: cotizacion.totalMaxMXN,
-    totalMinUSD: cotizacion.totalMinUSD,
-    totalMaxUSD: cotizacion.totalMaxUSD,
+    precioFinalMXN: cotizacion.precioFinalMXN,
+    precioFinalUSD: cotizacion.precioFinalUSD,
     tipoCambio: {
       fecha: String(tipoCambio.fecha ?? ''),
       fuente: String(tipoCambio.fuente ?? ''),
     },
     tasaEstimada: esTasaEstimada(tipoCambio.fuente),
-    leyenda: String(cotizacion.leyenda ?? ''),
+    leyenda: LEYENDA_PRECIO_FINAL,
+    leyendaUSD: LEYENDA_USD,
     vigenteHasta: fechaISO(ticket.tokenVenceEn),
     cliente: { nombre: primerNombre(ticket.cliente?.nombre) },
   };
@@ -123,6 +124,12 @@ function crearRutasPublicas({
         return responderGenerico(res);
       }
 
+      // Un ticket viejo pudo quedar enlazado sin precio final; no se expone.
+      const precioFinalMXN = Number(ticket.cotizacion?.precioFinalMXN);
+      if (!Number.isFinite(precioFinalMXN) || precioFinalMXN <= 0) {
+        return responderGenerico(res);
+      }
+
       return res.json(vistaTicketPublico(ticket));
     } catch (error) {
       return next(error);
@@ -150,6 +157,10 @@ function crearRutasPublicas({
 
       const estado = esRechazo ? 'rechazado' : 'autorizado';
       const decisionGuardada = { resultado: estado, en: ahora };
+      const precioFinalMXN = Number(ticket.cotizacion?.precioFinalMXN);
+      if (Number.isFinite(precioFinalMXN) && precioFinalMXN > 0) {
+        decisionGuardada.precioFinalMXN = precioFinalMXN;
+      }
       if (esRechazo) Object.assign(decisionGuardada, rechazo);
 
       const actualizado = await cambiarEstado(Ticket, {

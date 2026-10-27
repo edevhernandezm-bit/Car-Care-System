@@ -1,8 +1,8 @@
 const mongoose = require('mongoose');
+const { LEYENDA_PRECIO_FINAL } = require('./cotizacion');
 
 const RESEND_URL = 'https://api.resend.com/emails';
 const TIMEOUT_MS = 10000;
-const LEYENDA = 'No incluye mano de obra';
 const CORREO_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -43,26 +43,41 @@ function normalizarResumen(resumen) {
         fuente: String(datos.tipoCambio.fuente || ''),
       }
     : null;
+  const precioFinalMXN = Number(datos.precioFinalMXN);
+  const precioFinalUSD = Number(datos.precioFinalUSD);
+  if (
+    !Number.isFinite(precioFinalMXN) ||
+    precioFinalMXN <= 0 ||
+    !Number.isFinite(precioFinalUSD) ||
+    precioFinalUSD < 0
+  ) {
+    throw new Error('El resumen no trae un precio final válido.');
+  }
   return {
     vehiculo: typeof datos.vehiculo === 'string' ? datos.vehiculo : '',
     fallas: Array.isArray(datos.fallas) ? datos.fallas.map((f) => String(f)) : [],
-    totales: typeof datos.totales === 'string' ? datos.totales : '',
-    leyenda: typeof datos.leyenda === 'string' ? datos.leyenda : LEYENDA,
+    precioFinalMXN,
+    precioFinalUSD,
+    // La leyenda es una regla del precio final, no un dato que pueda mandar el cliente.
+    leyenda: LEYENDA_PRECIO_FINAL,
     tipoCambio,
   };
 }
 
-// La tasa estimada no es un dato de mercado: el correo debe decirlo y mostrar
-// la fecha con la que se congelo, no presentarla como una tasa exacta.
+// La tasa se congela con el diagnostico y siempre se muestra con su fecha. Si
+// es la de respaldo, el correo debe decir que es estimada y no de mercado.
 function notaTipoCambio(tipoCambio) {
+  if (!tipoCambio) return '';
   // 'constante' es la fuente real del respaldo (server.js); 'estimada' se acepta
   // como etiqueta equivalente si el dato llega de otra fuente.
-  if (tipoCambio?.fuente !== 'constante' && tipoCambio?.fuente !== 'estimada') return '';
+  const estimada =
+    tipoCambio.fuente === 'constante' || tipoCambio.fuente === 'estimada';
+  const rotulo = estimada ? 'Tipo de cambio estimado' : 'Tipo de cambio';
   const fecha = tipoCambio.fecha || 'sin fecha';
   if (Number.isFinite(tipoCambio.usd_mxn) && tipoCambio.usd_mxn > 0) {
-    return `Tipo de cambio estimado (${fecha}): 1 USD = ${tipoCambio.usd_mxn} MXN.`;
+    return `${rotulo} (${fecha}): 1 USD = ${tipoCambio.usd_mxn} MXN.`;
   }
-  return `Tipo de cambio estimado (${fecha}).`;
+  return `${rotulo} (${fecha}).`;
 }
 
 function plantillaCotizacion({ nombre, enlace, resumen } = {}) {
@@ -74,39 +89,57 @@ function plantillaCotizacion({ nombre, enlace, resumen } = {}) {
   const vehiculoSeguro = escaparHtml(datos.vehiculo);
   const enlaceSeguro = escaparHtml(enlace);
   const fallas = datos.fallas.map((falla) => escaparHtml(falla));
-  const totalesSeguro = escaparHtml(datos.totales);
+  const precioSeguro = escaparHtml(
+    `Precio final: $${datos.precioFinalMXN.toFixed(2)} MXN ` +
+      `(aprox. $${datos.precioFinalUSD.toFixed(2)} USD).`
+  );
+  const avisoUSDSeguro = escaparHtml(
+    'El monto a pagar es en MXN. El precio en USD es aproximado, solo referencia.'
+  );
   const leyendaSegura = escaparHtml(datos.leyenda);
   const notaTasa = notaTipoCambio(datos.tipoCambio);
   const notaTasaSegura = escaparHtml(notaTasa);
 
-  const asunto = ['Cotizacion de reparacion', datos.vehiculo]
+  const asunto = ['Cotización de reparación', datos.vehiculo]
     .filter(Boolean)
     .join(' - ')
     .replace(/[\r\n]+/g, ' ');
 
   const html = [
-    '<h2>Cotizacion de reparacion</h2>',
+    '<!doctype html>',
+    '<html>',
+    '<head><meta charset="UTF-8"></head>',
+    '<body>',
+    '<h2>Cotización de reparación</h2>',
     `<p>Hola ${nombreSeguro},</p>`,
-    '<p>Este es el resumen de la cotizacion para tu vehiculo:</p>',
+    '<p>Este es el resumen de la cotización para tu vehículo:</p>',
     vehiculoSeguro ? `<p><strong>${vehiculoSeguro}</strong></p>` : '',
     fallas.length ? `<ul>${fallas.map((falla) => `<li>${falla}</li>`).join('')}</ul>` : '',
-    totalesSeguro ? `<p>${totalesSeguro}</p>` : '',
-    notaTasa ? `<p>${notaTasaSegura}</p>` : '',
+    `<p>${precioSeguro}</p>`,
     `<p>${leyendaSegura}</p>`,
-    `<p><a href="${enlaceSeguro}">Revisar y responder la cotizacion</a></p>`,
+    `<p>${avisoUSDSeguro}</p>`,
+    notaTasa ? `<p>${notaTasaSegura}</p>` : '',
+    '<p>Puedes autorizar o rechazar la cotización. Si rechazas, indica un motivo.</p>',
+    `<p><a href="${enlaceSeguro}">Revisar y responder la cotización</a></p>`,
     '<p>El enlace vence en 72 horas y solo puede usarse una vez.</p>',
+    '</body>',
+    '</html>',
   ]
     .filter(Boolean)
     .join('\n');
 
   const texto = [
-    'Cotizacion de reparacion',
+    'Cotización de reparación',
     `Hola ${nombre || ''},`,
+    'Resumen de la cotización para tu vehículo:',
     datos.vehiculo,
     ...datos.fallas,
-    datos.totales,
-    notaTasa,
+    `Precio final: $${datos.precioFinalMXN.toFixed(2)} MXN ` +
+      `(aprox. $${datos.precioFinalUSD.toFixed(2)} USD).`,
+    'El monto a pagar es en MXN. El precio en USD es aproximado, solo referencia.',
     datos.leyenda,
+    notaTasa,
+    'Puedes autorizar o rechazar la cotización. Si rechazas, indica un motivo.',
     `Revisar y responder: ${enlace}`,
     'El enlace vence en 72 horas y solo puede usarse una vez.',
   ]

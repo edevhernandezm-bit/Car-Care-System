@@ -122,9 +122,10 @@ const mongoose = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
       TICKETS_ENABLED: '1',
       MAIL_PROVIDER: 'fake',
       PUBLIC_APP_URL: WEB_URL,
-      // La suite comparte IP: el cupo publico normal (20) se agotaria entre
-      // pruebas. El 429 del router se mide en una instancia aislada.
+      // La suite comparte IP: los cupos normales se agotarian entre pruebas.
+      // Los 429 se miden en instancias aisladas.
       PUBLIC_RATE_LIMIT_MAX: '1000',
+      RATE_LIMIT_MAX: '1000',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -3491,7 +3492,7 @@ async function ultimoCorreo(para) {
   }
 }
 
-async function crearTicketEnviado(cookieAdmin, cookieDatos, correo) {
+async function crearTicketEnviado(cookieAdmin, cookieDatos, correo, precioFinalMXN = 1234.5) {
   const { respuesta } = await crearTicketDePrueba(cookieAdmin, cookieDatos, correo);
   assert.equal(respuesta.status, 201, 'el ticket de la prueba publica debe crearse');
   const ticket = respuesta.body;
@@ -3499,11 +3500,12 @@ async function crearTicketEnviado(cookieAdmin, cookieDatos, correo) {
   const enviado = await api(`/api/tickets/${ticket._id}/enviar`, {
     method: 'POST',
     cookie: cookieAdmin,
+    body: { precioFinalMXN },
   });
   assert.equal(enviado.status, 200, 'el correo fake debe aceptar el envio publico');
 
   const token = await tokenDelUltimoCorreo(correo);
-  return { ticket, token };
+  return { ticket: enviado.body, token };
 }
 
 async function tokenDelUltimoCorreo(correo) {
@@ -3624,9 +3626,11 @@ test('41 | Tickets: enviar, fallo simulado, reintento limpia el codigo y GET no 
   const enviado = await api(`/api/tickets/${ticket._id}/enviar`, {
     method: 'POST',
     cookie: cookieAdmin,
+    body: { precioFinalMXN: 1500 },
   });
   assert.equal(enviado.status, 200, 'el correo fake debe aceptar el envio');
   const ticketEnviado = enviado.body;
+  assert.equal(ticketEnviado.cotizacion.precioFinalMXN, 1500);
   assert.equal(ticketEnviado.envio.enviado, true);
   assert.equal(ticketEnviado.envio.codigoError, undefined, 'un exito no deja codigo');
   assert.ok(Number.isFinite(Date.parse(ticketEnviado.envio.ultimoIntentoEn)));
@@ -3667,6 +3671,7 @@ test('41 | Tickets: enviar, fallo simulado, reintento limpia el codigo y GET no 
   const fallido = await api(`/api/tickets/${idSimulado}/enviar`, {
     method: 'POST',
     cookie: cookieAdmin,
+    body: { precioFinalMXN: 1400 },
   });
   assert.equal(fallido.status, 502, 'el fallo simulado responde 502');
   assert.equal(await ultimoCorreo(correoSimulado), null, 'el fallo simulado no guarda correo');
@@ -3695,9 +3700,11 @@ test('41 | Tickets: enviar, fallo simulado, reintento limpia el codigo y GET no 
   const reenviado = await api(`/api/tickets/${idSimulado}/enviar`, {
     method: 'POST',
     cookie: cookieAdmin,
+    body: { precioFinalMXN: 1600 },
   });
   assert.equal(reenviado.status, 200, 'el reintento debe completarse');
   const ticketReenviado = reenviado.body;
+  assert.equal(ticketReenviado.cotizacion.precioFinalMXN, 1600);
   assert.equal(ticketReenviado.envio.enviado, true);
   assert.equal(ticketReenviado.envio.intentos, 2);
   assert.equal(ticketReenviado.envio.codigoError, undefined, 'el exito limpia el codigo');
@@ -3805,12 +3812,11 @@ test('43 | Público: consultar válido devuelve solo la lista blanca y no crea c
     'cliente',
     'fallas',
     'leyenda',
+    'leyendaUSD',
+    'precioFinalMXN',
+    'precioFinalUSD',
     'tasaEstimada',
     'tipoCambio',
-    'totalMaxMXN',
-    'totalMaxUSD',
-    'totalMinMXN',
-    'totalMinUSD',
     'vehiculo',
     'vigenteHasta',
   ]);
@@ -3822,10 +3828,11 @@ test('43 | Público: consultar válido devuelve solo la lista blanca y no crea c
     anio: ticket.vehiculo.anio,
   });
   assert.deepEqual(cuerpo.fallas, ticket.fallas.map((falla) => falla.nombre));
-  assert.equal(cuerpo.totalMinMXN, ticket.cotizacion.totalMinMXN);
-  assert.equal(cuerpo.totalMaxMXN, ticket.cotizacion.totalMaxMXN);
-  assert.equal(cuerpo.totalMinUSD, ticket.cotizacion.totalMinUSD);
-  assert.equal(cuerpo.totalMaxUSD, ticket.cotizacion.totalMaxUSD);
+  assert.equal(cuerpo.precioFinalMXN, ticket.cotizacion.precioFinalMXN);
+  assert.equal(cuerpo.precioFinalUSD, ticket.cotizacion.precioFinalUSD);
+  assert.equal(cuerpo.leyenda, 'Incluye mano de obra');
+  assert.match(cuerpo.leyendaUSD, /aproximado, solo referencia/);
+  assert.match(cuerpo.leyendaUSD, /monto a pagar es en MXN/);
   assert.equal(cuerpo.cliente.nombre, 'Ana', 'solo sale el primer nombre');
   assert.equal(typeof cuerpo.tasaEstimada, 'boolean');
   assert.ok(Number.isFinite(Date.parse(cuerpo.vigenteHasta)), 'vigenteHasta debe ser una fecha');
@@ -3866,6 +3873,8 @@ test('44 | Público: diez decisiones simultáneas dejan una sola transición', a
   const doc = await ticketEnMongo(ticket._id);
   assert.ok(['autorizado', 'rechazado'].includes(doc.estado), 'el estado final debe ser coherente');
   assert.equal(doc.tokenHash, undefined, 'el token se elimina al decidir');
+  assert.equal(doc.decisiones.length, 1);
+  assert.equal(doc.decisiones[0].precioFinalMXN, doc.cotizacion.precioFinalMXN);
   assert.equal(
     doc.historial.filter(
       (paso) => paso.de === 'cotizacion_enviada' && ['autorizado', 'rechazado'].includes(paso.a)
@@ -3996,6 +4005,7 @@ test('49 | Público: rechazo con motivo y comentario queda guardado', async () =
   assert.equal(doc.decisiones.length, 1, 'una sola decision');
   const [decision] = doc.decisiones;
   assert.equal(decision.resultado, 'rechazado');
+  assert.equal(decision.precioFinalMXN, ticket.cotizacion.precioFinalMXN);
   assert.equal(decision.motivo, 'precio_alto');
   assert.equal(decision.comentario, 'Muy caro, gracias.', 'se guarda con trim');
   assert.ok(decision.en instanceof Date);
@@ -4022,8 +4032,13 @@ test('50 | Público: rechazo sin motivo ni comentario es valido', async () => {
 
   const doc = await ticketEnMongo(ticket._id);
   assert.equal(doc.decisiones.length, 1);
-  assert.deepEqual(Object.keys(doc.decisiones[0]).sort(), ['en', 'resultado']);
+  assert.deepEqual(Object.keys(doc.decisiones[0]).sort(), [
+    'en',
+    'precioFinalMXN',
+    'resultado',
+  ]);
   assert.equal(doc.decisiones[0].resultado, 'rechazado');
+  assert.equal(doc.decisiones[0].precioFinalMXN, ticket.cotizacion.precioFinalMXN);
 });
 
 test('51 | Público: diez rechazos simultaneos guardan solo la decision ganadora', async () => {
@@ -4134,8 +4149,13 @@ test('53 | Público: autorizar ignora motivo y comentario', async () => {
 
   const doc = await ticketEnMongo(ticket._id);
   assert.equal(doc.decisiones.length, 1);
-  assert.deepEqual(Object.keys(doc.decisiones[0]).sort(), ['en', 'resultado']);
+  assert.deepEqual(Object.keys(doc.decisiones[0]).sort(), [
+    'en',
+    'precioFinalMXN',
+    'resultado',
+  ]);
   assert.equal(doc.decisiones[0].resultado, 'autorizado');
+  assert.equal(doc.decisiones[0].precioFinalMXN, ticket.cotizacion.precioFinalMXN);
 });
 
 test('54 | Público: el comentario con HTML se guarda tal cual', async () => {
@@ -4188,6 +4208,7 @@ test('55 | Tickets: reenvio desde rechazado regenera token y conserva decisiones
   const fallido = await api(`/api/tickets/${ticket._id}/enviar`, {
     method: 'POST',
     cookie: cookieAdmin,
+    body: { precioFinalMXN: 2000 },
   });
   assert.equal(fallido.status, 502);
 
@@ -4196,21 +4217,33 @@ test('55 | Tickets: reenvio desde rechazado regenera token y conserva decisiones
   assert.equal(trasFallo.envio.enviado, false, 'el envio anterior se reinicia');
   assert.equal(trasFallo.decisiones.length, 1, 'las decisiones siguen intactas');
   assert.equal(trasFallo.decisiones[0].comentario, 'revisar precio');
+  assert.equal(trasFallo.decisiones[0].precioFinalMXN, 1234.5);
   assert.equal(trasFallo.decisiones[0].en.toISOString(), enAntes);
+  assert.deepEqual(
+    trasFallo.precios.map((precio) => precio.precioFinalMXN),
+    [1234.5, 2000]
+  );
 
   await actualizarTicket(ticket._id, { $set: { 'cliente.correo': correo } });
   const reenviado = await api(`/api/tickets/${ticket._id}/enviar`, {
     method: 'POST',
     cookie: cookieAdmin,
+    body: { precioFinalMXN: 2500 },
   });
   assert.equal(reenviado.status, 200);
 
   const doc = await ticketEnMongo(ticket._id);
   assert.equal(doc.estado, 'cotizacion_enviada');
   assert.equal(doc.envio.enviado, true);
+  assert.equal(doc.cotizacion.precioFinalMXN, 2500);
   assert.equal(doc.decisiones.length, 1);
   assert.equal(doc.decisiones[0].comentario, 'revisar precio');
+  assert.equal(doc.decisiones[0].precioFinalMXN, 1234.5);
   assert.equal(doc.decisiones[0].en.toISOString(), enAntes);
+  assert.deepEqual(
+    doc.precios.map((precio) => precio.precioFinalMXN),
+    [1234.5, 2000, 2500]
+  );
 
   const horas = (doc.tokenVenceEn - Date.now()) / 3600000;
   assert.ok(horas > 71 && horas <= 72.1, `el token nuevo vence en 72 h (${horas})`);
@@ -4219,6 +4252,7 @@ test('55 | Tickets: reenvio desde rechazado regenera token y conserva decisiones
   assert.notEqual(tokenNuevo, token, 'el token debe ser nuevo');
   const consultaNueva = await postPublico('consultar', { token: tokenNuevo });
   assert.equal(consultaNueva.status, 200);
+  assert.equal(JSON.parse(consultaNueva.texto).precioFinalMXN, 2500);
   const consultaVieja = await postPublico('consultar', { token });
   assert.equal(consultaVieja.status, 404);
 });
@@ -4284,6 +4318,7 @@ test('57 | Público: la consulta no expone decisiones ni comentario', async () =
   const reenvio = await api(`/api/tickets/${ticket._id}/enviar`, {
     method: 'POST',
     cookie: cookieAdmin,
+    body: { precioFinalMXN: 1800 },
   });
   assert.equal(reenvio.status, 200, 'reenviar desde rechazado es valido');
 
@@ -4327,4 +4362,398 @@ test('58 | Tickets: la lista no expone el comentario de la decision', async () =
   assert.equal(detalle.status, 200);
   assert.equal(detalle.body.decisiones.length, 1);
   assert.equal(detalle.body.decisiones[0].comentario, secreto);
+});
+
+test('59 | Tickets: el precio final inválido responde 422 y no toca el ticket', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const correo = `tickets-precio-invalido-${Date.now()}@example.com`;
+  const { respuesta } = await crearTicketDePrueba(cookieAdmin, cookieDatos, correo);
+  assert.equal(respuesta.status, 201);
+  const ticket = respuesta.body;
+
+  const casos = [
+    ['sin cuerpo', undefined],
+    ['sin la clave', {}],
+    ['tres decimales', { precioFinalMXN: 10.001 }],
+    ['texto', { precioFinalMXN: '500' }],
+    ['notación exponencial', { precioFinalMXN: '1e3' }],
+    ['NaN serializado', { precioFinalMXN: NaN }],
+    ['Infinity serializado', { precioFinalMXN: Infinity }],
+    ['cero', { precioFinalMXN: 0 }],
+    ['negativo', { precioFinalMXN: -1 }],
+    ['arriba del máximo', { precioFinalMXN: 10000000 }],
+  ];
+
+  for (const [nombre, body] of casos) {
+    const respuestaEnvio = await api(`/api/tickets/${ticket._id}/enviar`, {
+      method: 'POST',
+      cookie: cookieAdmin,
+      body,
+    });
+    assert.equal(respuestaEnvio.status, 422, nombre);
+    assert.deepEqual(respuestaEnvio.body, { error: 'Datos no válidos' }, nombre);
+  }
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.estado, 'diagnosticado');
+  assert.equal(doc.cotizacion.precioFinalMXN, undefined);
+  assert.equal(doc.cotizacion.precioFinalUSD, undefined);
+  assert.deepEqual(doc.precios, []);
+  assert.equal(doc.tokenHash, undefined);
+  assert.equal(doc.envio.enviado, false);
+  assert.equal(doc.envio.intentos, 0);
+  assert.equal(await ultimoCorreo(correo), null, 'no debe salir correo');
+});
+
+test('60 | Tickets: el precio válido fija USD con la tasa congelada y registra precios[]', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const correo = `tickets-precio-${Date.now()}@example.com`;
+  const { diag, respuesta } = await crearTicketDePrueba(cookieAdmin, cookieDatos, correo);
+  assert.equal(respuesta.status, 201);
+  const ticket = respuesta.body;
+
+  const enviado = await api(`/api/tickets/${ticket._id}/enviar`, {
+    method: 'POST',
+    cookie: cookieAdmin,
+    body: { precioFinalMXN: 1234.5 },
+  });
+  assert.equal(enviado.status, 200);
+  const esperadoUSD = Math.round(123450 / diag.tipo_cambio.usd_mxn) / 100;
+  assert.equal(enviado.body.cotizacion.precioFinalMXN, 1234.5);
+  assert.equal(enviado.body.cotizacion.precioFinalUSD, esperadoUSD);
+  assert.equal(enviado.body.cotizacion.leyenda, 'Incluye mano de obra');
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.cotizacion.tipoCambio.usd_mxn, diag.tipo_cambio.usd_mxn);
+  assert.equal(doc.cotizacion.tipoCambio.fecha, diag.tipo_cambio.fecha);
+  assert.equal(doc.cotizacion.precioFinalMXN, 1234.5);
+  assert.equal(doc.cotizacion.precioFinalUSD, esperadoUSD);
+  assert.equal(doc.precios.length, 1);
+  assert.equal(doc.precios[0].precioFinalMXN, 1234.5);
+  assert.ok(doc.precios[0].en instanceof Date);
+  assert.ok(doc.precios[0].por, 'debe guardar quién fijó el precio');
+
+  const detalle = await api(`/api/tickets/${ticket._id}`, { cookie: cookieAdmin });
+  assert.equal(detalle.status, 200);
+  assert.equal(detalle.body.cotizacion.precioFinalMXN, 1234.5);
+  // El rango del catálogo sigue siendo una referencia interna del detalle.
+  assert.equal(detalle.body.cotizacion.totalMinMXN, respuesta.body.cotizacion.totalMinMXN);
+});
+
+test('61 | Tickets: un enlace activo bloquea cualquier cambio de precio', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const correo = correoPublico('precio-bloqueado');
+  const { ticket, token } = await crearTicketEnviado(cookieAdmin, cookieDatos, correo, 1000);
+  const antes = await ticketEnMongo(ticket._id);
+
+  const intento = await api(`/api/tickets/${ticket._id}/enviar`, {
+    method: 'POST',
+    cookie: cookieAdmin,
+    body: { precioFinalMXN: 2000 },
+  });
+  assert.equal(intento.status, 409);
+  assert.deepEqual(intento.body, { error: 'La cotización ya fue enviada' });
+
+  const despues = await ticketEnMongo(ticket._id);
+  assert.equal(despues.cotizacion.precioFinalMXN, 1000);
+  assert.deepEqual(
+    despues.precios.map((precio) => precio.precioFinalMXN),
+    [1000]
+  );
+  assert.equal(despues.tokenHash, antes.tokenHash);
+  assert.equal(despues.envio.intentos, antes.envio.intentos);
+
+  const consulta = await postPublico('consultar', { token });
+  assert.equal(consulta.status, 200);
+  assert.equal(JSON.parse(consulta.texto).precioFinalMXN, 1000);
+});
+
+test('62 | Tickets: el reintento con enviado=false invalida el token anterior', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const correo = correoPublico('token-reemplazado');
+  const { ticket, token: tokenViejo } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correo,
+    1200
+  );
+
+  await actualizarTicket(ticket._id, { $set: { 'envio.enviado': false } });
+  const reenvio = await api(`/api/tickets/${ticket._id}/enviar`, {
+    method: 'POST',
+    cookie: cookieAdmin,
+    body: { precioFinalMXN: 1300 },
+  });
+  assert.equal(reenvio.status, 200);
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.estado, 'cotizacion_enviada');
+  assert.deepEqual(
+    doc.precios.map((precio) => precio.precioFinalMXN),
+    [1200, 1300]
+  );
+  assert.equal(doc.decisiones.length, 0);
+
+  const viejo = await postPublico('consultar', { token: tokenViejo });
+  assert.equal(viejo.status, 404);
+  assert.deepEqual(JSON.parse(viejo.texto), ERROR_PUBLICO);
+
+  const tokenNuevo = await tokenDelUltimoCorreo(correo);
+  assert.notEqual(tokenNuevo, tokenViejo);
+  const nuevo = await postPublico('consultar', { token: tokenNuevo });
+  assert.equal(nuevo.status, 200);
+  assert.equal(JSON.parse(nuevo.texto).precioFinalMXN, 1300);
+});
+
+test('63 | Tickets: reenvío tras rechazo guarda dos precios y conserva el de la decisión', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const correo = correoPublico('dos-precios');
+  const { ticket, token: tokenViejo } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correo,
+    1000
+  );
+
+  const rechazo = await postPublico('decidir', {
+    token: tokenViejo,
+    decision: 'rechazar',
+    motivo: 'precio_alto',
+  });
+  assert.equal(rechazo.status, 200);
+
+  const reenvio = await api(`/api/tickets/${ticket._id}/enviar`, {
+    method: 'POST',
+    cookie: cookieAdmin,
+    body: { precioFinalMXN: 1500 },
+  });
+  assert.equal(reenvio.status, 200);
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.deepEqual(
+    doc.precios.map((precio) => precio.precioFinalMXN),
+    [1000, 1500]
+  );
+  assert.equal(doc.cotizacion.precioFinalMXN, 1500);
+  assert.equal(doc.decisiones.length, 1);
+  assert.equal(doc.decisiones[0].precioFinalMXN, 1000);
+
+  const viejo = await postPublico('consultar', { token: tokenViejo });
+  assert.equal(viejo.status, 404);
+  const tokenNuevo = await tokenDelUltimoCorreo(correo);
+  const nuevo = await postPublico('consultar', { token: tokenNuevo });
+  assert.equal(nuevo.status, 200);
+  assert.equal(JSON.parse(nuevo.texto).precioFinalMXN, 1500);
+});
+
+test('64 | Tickets: reenvío y decisión simultáneos dejan un solo efecto', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const correo = correoPublico('carrera-precio');
+  const { ticket, token } = await crearTicketEnviado(cookieAdmin, cookieDatos, correo, 1000);
+
+  await actualizarTicket(ticket._id, { $set: { 'envio.enviado': false } });
+  const [reenvio, decision] = await Promise.all([
+    api(`/api/tickets/${ticket._id}/enviar`, {
+      method: 'POST',
+      cookie: cookieAdmin,
+      body: { precioFinalMXN: 2000 },
+    }),
+    postPublico('decidir', { token, decision: 'autorizar' }),
+  ]);
+
+  const ganoReenvio = reenvio.status === 200;
+  assert.notEqual(ganoReenvio, decision.status === 200, 'solo uno de los dos debe ganar');
+
+  const doc = await ticketEnMongo(ticket._id);
+  if (ganoReenvio) {
+    assert.equal(decision.status, 404);
+    assert.equal(doc.estado, 'cotizacion_enviada');
+    assert.deepEqual(
+      doc.precios.map((precio) => precio.precioFinalMXN),
+      [1000, 2000]
+    );
+    assert.equal(doc.decisiones.length, 0);
+    assert.ok(doc.tokenHash);
+    assert.notEqual(doc.tokenHash, undefined);
+  } else {
+    assert.equal(reenvio.status, 409);
+    assert.equal(doc.estado, 'autorizado');
+    assert.deepEqual(
+      doc.precios.map((precio) => precio.precioFinalMXN),
+      [1000]
+    );
+    assert.equal(doc.decisiones.length, 1);
+    assert.equal(doc.decisiones[0].precioFinalMXN, 1000);
+    assert.equal(doc.tokenHash, undefined);
+  }
+});
+
+test('65 | Público: un ticket sin precio final da el 404 genérico', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const { ticket, token } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('sin-precio')
+  );
+
+  await actualizarTicket(ticket._id, {
+    $unset: { 'cotizacion.precioFinalMXN': '', 'cotizacion.precioFinalUSD': '' },
+  });
+  const respuesta = await postPublico('consultar', { token });
+  assert.equal(respuesta.status, 404);
+  assert.deepEqual(JSON.parse(respuesta.texto), ERROR_PUBLICO);
+  assert.equal(respuesta.headers.get('cache-control'), 'no-store');
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.estado, 'cotizacion_enviada');
+  assert.ok(doc.tokenHash, 'la consulta no consume el enlace');
+});
+
+test('66 | Tickets: dos listados simultáneos dejan una sola transición a vencido', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const { ticket } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('vencimiento-carrera')
+  );
+
+  await actualizarTicket(ticket._id, {
+    $set: { tokenVenceEn: new Date(Date.now() - 1000) },
+  });
+  const [uno, dos] = await Promise.all([
+    api('/api/tickets?limit=200', { cookie: cookieAdmin }),
+    api('/api/tickets?limit=200', { cookie: cookieAdmin }),
+  ]);
+  assert.equal(uno.status, 200);
+  assert.equal(dos.status, 200);
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.estado, 'vencido');
+  assert.equal(doc.tokenHash, undefined);
+  assert.equal(
+    doc.historial.filter((paso) => paso.a === 'vencido').length,
+    1,
+    'solo una transición a vencido'
+  );
+  const enLista = uno.body.tickets.find((fila) => fila._id === ticket._id);
+  assert.ok(enLista, 'el ticket vencido debe aparecer en la lista');
+  assert.equal(enLista.estado, 'vencido');
+});
+
+test('67 | Tickets: /atencion solo entrega ids y estado, sin datos personales', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+
+  const correoAutorizado = correoPublico('atencion-autorizado');
+  const autorizado = await crearTicketEnviado(cookieAdmin, cookieDatos, correoAutorizado);
+  assert.equal(
+    (
+      await postPublico('decidir', {
+        token: autorizado.token,
+        decision: 'autorizar',
+      })
+    ).status,
+    200
+  );
+
+  const secreto = 'comentario-atencion-67';
+  const correoRechazado = correoPublico('atencion-rechazado');
+  const rechazado = await crearTicketEnviado(cookieAdmin, cookieDatos, correoRechazado);
+  assert.equal(
+    (
+      await postPublico('decidir', {
+        token: rechazado.token,
+        decision: 'rechazar',
+        motivo: 'otro',
+        comentario: secreto,
+      })
+    ).status,
+    200
+  );
+
+  const correoVencido = correoPublico('atencion-vencido');
+  const vencido = await crearTicketEnviado(cookieAdmin, cookieDatos, correoVencido);
+  await actualizarTicket(vencido.ticket._id, {
+    $set: { tokenVenceEn: new Date(Date.now() - 1000) },
+  });
+
+  const correoPendiente = `atencion-pendiente-${Date.now()}@example.com`;
+  const pendiente = await crearTicketDePrueba(cookieAdmin, cookieDatos, correoPendiente);
+  assert.equal(pendiente.respuesta.status, 201);
+
+  const sinSesion = await api('/api/tickets/atencion');
+  assert.equal(sinSesion.status, 401);
+  const estudiante = await api('/api/tickets/atencion', { cookie: cookieDatos });
+  assert.equal(estudiante.status, 403);
+
+  const respuesta = await api('/api/tickets/atencion', { cookie: cookieAdmin });
+  assert.equal(respuesta.status, 200);
+  assert.ok(Array.isArray(respuesta.body.tickets));
+  assert.ok(respuesta.body.tickets.length <= 200);
+
+  const porId = new Map(respuesta.body.tickets.map((fila) => [fila.ticketId, fila]));
+  for (const [ticket, estado] of [
+    [autorizado.ticket, 'autorizado'],
+    [rechazado.ticket, 'rechazado'],
+    [vencido.ticket, 'vencido'],
+  ]) {
+    const fila = porId.get(ticket._id);
+    assert.ok(fila, `el ticket ${estado} debe aparecer`);
+    assert.deepEqual(fila, {
+      ticketId: ticket._id,
+      diagnosticoId: ticket.diagnosticoId,
+      estado,
+    });
+  }
+  assert.equal(porId.has(pendiente.respuesta.body._id), false, 'diagnosticado no entra');
+  assert.equal(respuesta.texto.includes(secreto), false);
+  for (const prohibido of [
+    correoAutorizado,
+    correoRechazado,
+    correoVencido,
+    correoPendiente,
+    'Ana Ticket',
+    'tokenHash',
+  ]) {
+    assert.equal(respuesta.texto.includes(prohibido), false, `no debe salir ${prohibido}`);
+  }
+  sinEnlaceNiToken(respuesta.body);
+});
+
+test('68 | Correo: el fake recibe precio final, leyenda y tildes en UTF-8', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const correo = correoPublico('contenido');
+  const { ticket, token } = await crearTicketEnviado(cookieAdmin, cookieDatos, correo, 1234.5);
+  const guardado = await ultimoCorreo(correo);
+  assert.ok(guardado);
+
+  assert.match(guardado.asunto, /Cotización de reparación/);
+  assert.match(guardado.html, /<meta charset="UTF-8">/);
+  assert.match(guardado.html, /Cotización de reparación/);
+  assert.match(guardado.html, /vehículo/);
+  assert.match(guardado.html, /Precio final: \$1234\.50 MXN/);
+  assert.match(
+    guardado.html,
+    new RegExp(`aprox\\. \\$${ticket.cotizacion.precioFinalUSD.toFixed(2)} USD`)
+  );
+  assert.match(guardado.html, /Incluye mano de obra/);
+  assert.match(guardado.html, /aproximado, solo referencia/);
+  assert.match(guardado.html, /El monto a pagar es en MXN/);
+  assert.match(guardado.html, /Tipo de cambio/);
+  assert.match(guardado.html, new RegExp(ticket.cotizacion.tipoCambio.fecha));
+  assert.doesNotMatch(guardado.html, /No incluye mano de obra|Total estimado/);
+
+  assert.match(guardado.text, /Cotización de reparación/);
+  assert.match(guardado.text, /Precio final: \$1234\.50 MXN/);
+  assert.match(guardado.text, /Incluye mano de obra/);
+  assert.equal(guardado.html.includes(`${WEB_URL}/cotizacion#${token}`), true);
 });

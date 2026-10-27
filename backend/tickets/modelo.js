@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { PRECIO_FINAL_MAX } = require('./cotizacion');
 
 const ESTADOS = [
   'diagnosticado',
@@ -80,7 +81,17 @@ const decisionSchema = new mongoose.Schema(
     resultado: { type: String, enum: ['autorizado', 'rechazado'], required: true },
     motivo: { type: String, enum: MOTIVOS_RECHAZO },
     comentario: { type: String, maxlength: COMENTARIO_MAX },
+    precioFinalMXN: { type: Number, min: 0.01, max: PRECIO_FINAL_MAX },
     en: { type: Date, required: true },
+  },
+  { _id: false }
+);
+
+const precioFinalSchema = new mongoose.Schema(
+  {
+    precioFinalMXN: { type: Number, required: true, min: 0.01, max: PRECIO_FINAL_MAX },
+    en: { type: Date, required: true },
+    por: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   },
   { _id: false }
 );
@@ -108,7 +119,13 @@ const ticketSchema = new mongoose.Schema(
         fuente: { type: String, required: true },
       },
       leyenda: { type: String, default: 'No incluye mano de obra' },
+      // Solo existen despues de enviar: son el precio final del mecanico y el
+      // USD aproximado calculado con la tasa congelada del diagnostico.
+      precioFinalMXN: { type: Number, min: 0.01, max: PRECIO_FINAL_MAX },
+      precioFinalUSD: { type: Number, min: 0 },
     },
+    // Historial append-only de precios finales enviados, para auditar reenvios.
+    precios: { type: [precioFinalSchema], default: [] },
     estado: { type: String, enum: ESTADOS, required: true, default: 'diagnosticado' },
     historial: { type: [historialSchema], default: [] },
     decisiones: { type: [decisionSchema], default: [] },

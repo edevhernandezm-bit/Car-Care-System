@@ -2,14 +2,25 @@ const express = require('express');
 const mongoose = require('mongoose');
 
 const { esClaveDuplicada, codigoErrorValido } = require('./modelo');
-const { cambiarEstado, puedeTransicionar } = require('./transiciones');
+const {
+  cambiarEstado,
+  puedeTransicionar,
+  vencerExpirada,
+} = require('./transiciones');
 const { generarToken, hashToken, calcularVencimiento } = require('./token');
-const { calcularCotizacion, precioCatalogoEnMXN } = require('./cotizacion');
+const {
+  calcularCotizacion,
+  precioCatalogoEnMXN,
+  centavosPrecioFinal,
+  LEYENDA_PRECIO_FINAL,
+} = require('./cotizacion');
 const { construirEnlace } = require('./correo');
 
 const LIMITE_POR_DEFECTO = 20;
 const LIMITE_MAXIMO = 100;
+const LIMITE_ATENCION = 200;
 const ESTADOS_MECANICO = ['en_reparacion', 'terminado', 'cancelado'];
+const ESTADOS_ATENCION = ['autorizado', 'rechazado', 'vencido'];
 
 function idValido(id) {
   return mongoose.isValidObjectId(id);
@@ -64,19 +75,33 @@ function textoVehiculo(vehiculo) {
 
 function resumenTicket(ticket) {
   const cotizacion = ticket.cotizacion || {};
-  const totales = [
-    `Total estimado: $${Number(cotizacion.totalMinMXN || 0).toFixed(2)} - ` +
-      `$${Number(cotizacion.totalMaxMXN || 0).toFixed(2)} MXN ` +
-      `($${Number(cotizacion.totalMinUSD || 0).toFixed(2)} - ` +
-      `$${Number(cotizacion.totalMaxUSD || 0).toFixed(2)} USD).`,
-  ].join('');
   return {
     vehiculo: textoVehiculo(ticket.vehiculo),
     fallas: (ticket.fallas || []).map((falla) => falla.nombre),
-    totales,
-    leyenda: cotizacion.leyenda,
+    precioFinalMXN: cotizacion.precioFinalMXN,
+    precioFinalUSD: cotizacion.precioFinalUSD,
+    leyenda: LEYENDA_PRECIO_FINAL,
     tipoCambio: cotizacion.tipoCambio,
   };
+}
+
+// Una sola consulta de candidatos; vencerExpirada es atomica por ticket, asi
+// que dos listados simultaneos solo dejan una transicion a vencido.
+async function vencerCandidatos(Ticket) {
+  const ahora = new Date();
+  const candidatos = await Ticket.find({
+    estado: 'cotizacion_enviada',
+    tokenVenceEn: { $lte: ahora },
+  })
+    .select('_id')
+    .limit(LIMITE_ATENCION)
+    .lean();
+
+  await Promise.all(
+    (Array.isArray(candidatos) ? candidatos : []).map((ticket) =>
+      vencerExpirada(Ticket, { id: ticket._id, ahora })
+    )
+  );
 }
 
 function codigoDeEnvio(error) {
@@ -136,8 +161,29 @@ function crearRutasTickets({
   const router = express.Router();
   router.use(requireAuth, requireAdmin);
 
+  router.get('/atencion', async (req, res, next) => {
+    try {
+      await vencerCandidatos(Ticket);
+      const tickets = await Ticket.find({ estado: { $in: ESTADOS_ATENCION } })
+        .select('_id diagnosticoId estado')
+        .sort({ creadoEn: -1 })
+        .limit(LIMITE_ATENCION)
+        .lean();
+      return res.json({
+        tickets: tickets.map((ticket) => ({
+          ticketId: ticket._id,
+          diagnosticoId: ticket.diagnosticoId,
+          estado: ticket.estado,
+        })),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
   router.get('/', async (req, res, next) => {
     try {
+      await vencerCandidatos(Ticket);
       const tamano = limite(req.query.limit);
       const salto = desplazamiento(req.query.offset);
       const [tickets, total] = await Promise.all([
@@ -274,8 +320,35 @@ function crearRutasTickets({
       const { id } = req.params;
       if (!idValido(id)) return res.status(400).json({ error: 'Identificador inválido' });
 
+      // Se valida antes de tocar Mongo: un precio ausente o con mas de dos
+      // decimales no puede dejar rastro en el ticket.
+      const centavos = centavosPrecioFinal(req.body?.precioFinalMXN);
+      if (centavos === null) {
+        return res.status(422).json({ error: 'Datos no válidos' });
+      }
+
       const ticket = await Ticket.findById(id);
       if (!ticket) return res.status(404).json({ error: 'Ticket no encontrado' });
+
+      const tasa = Number(ticket.cotizacion?.tipoCambio?.usd_mxn);
+      if (!Number.isFinite(tasa) || tasa <= 0) {
+        return res.status(422).json({ error: 'Datos no válidos' });
+      }
+
+      const precioMXN = centavos / 100;
+      const precioUSD = Math.round(centavos / tasa) / 100;
+      const ahora = new Date();
+      const precioSet = {
+        'cotizacion.precioFinalMXN': precioMXN,
+        'cotizacion.precioFinalUSD': precioUSD,
+        'cotizacion.leyenda': LEYENDA_PRECIO_FINAL,
+      };
+      const precioEntrada = {
+        precioFinalMXN: precioMXN,
+        en: ahora,
+        por: req.session.userId,
+      };
+      const tokenVenceEn = calcularVencimiento(ahora);
 
       let actualizado;
       let token;
@@ -285,19 +358,20 @@ function crearRutasTickets({
         ticket.estado === 'rechazado'
       ) {
         token = generarToken();
-        const establecer = {
-          tokenHash: hashToken(token),
-          tokenVenceEn: calcularVencimiento(),
-        };
-        // Un rechazo se reabre como un intento nuevo: el correo anterior no
-        // cuenta como enviado hasta que este salga.
-        if (ticket.estado === 'rechazado') establecer['envio.enviado'] = false;
         actualizado = await cambiarEstado(Ticket, {
           id,
           de: ticket.estado,
           a: 'cotizacion_enviada',
           por: req.session.userId,
-          establecer,
+          ahora,
+          establecer: {
+            tokenHash: hashToken(token),
+            tokenVenceEn,
+            ...precioSet,
+            // El correo de este intento aun no ha salido.
+            'envio.enviado': false,
+          },
+          agregar: { precios: precioEntrada },
         });
       } else if (ticket.estado === 'cotizacion_enviada' && !ticket.envio?.enviado) {
         token = generarToken();
@@ -306,9 +380,11 @@ function crearRutasTickets({
           {
             $set: {
               tokenHash: hashToken(token),
-              tokenVenceEn: calcularVencimiento(),
-              actualizadoEn: new Date(),
+              tokenVenceEn,
+              actualizadoEn: ahora,
+              ...precioSet,
             },
+            $push: { precios: precioEntrada },
           },
           { new: true }
         );

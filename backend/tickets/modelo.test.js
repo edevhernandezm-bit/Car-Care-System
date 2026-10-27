@@ -85,6 +85,44 @@ test('decisiones solo acepta resultado, motivo y comentario validos', async () =
   }
 });
 
+test('precios[] y el precio final aceptan solo montos válidos', async () => {
+  const ticket = ticketValido({
+    cotizacion: {
+      ...ticketValido().cotizacion,
+      precioFinalMXN: 1500,
+      precioFinalUSD: 81.97,
+      leyenda: 'Incluye mano de obra',
+    },
+    precios: [
+      {
+        precioFinalMXN: 1500,
+        en: new Date(),
+        por: new mongoose.Types.ObjectId(),
+      },
+    ],
+  });
+  assert.equal(await errores(ticket), null);
+
+  for (const precioFinalMXN of [0, -1, 10000000]) {
+    const invalido = ticketValido({ precios: [{ precioFinalMXN, en: new Date() }] });
+    assert.ok((await errores(invalido))['precios.0.precioFinalMXN'], String(precioFinalMXN));
+  }
+});
+
+test('una decisión guarda el precio final vigente', async () => {
+  const ticket = ticketValido();
+  ticket.decisiones.push({
+    resultado: 'autorizado',
+    precioFinalMXN: 1500,
+    en: new Date(),
+  });
+  assert.equal(await errores(ticket), null);
+
+  const invalida = ticketValido();
+  invalida.decisiones.push({ resultado: 'autorizado', precioFinalMXN: 0, en: new Date() });
+  assert.ok((await errores(invalida))['decisiones.0.precioFinalMXN']);
+});
+
 test('acepta solo los codigos de error fijos y proveedor_<3 digitos>', async () => {
   for (const codigo of [
     'tiempo_agotado',

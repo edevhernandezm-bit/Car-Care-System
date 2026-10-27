@@ -72,6 +72,8 @@ test('la vista publica solo expone la lista blanca y recorta el nombre', () => {
       totalMaxMXN: 200,
       totalMinUSD: 5.46,
       totalMaxUSD: 10.93,
+      precioFinalMXN: 1500,
+      precioFinalUSD: 81.97,
       tipoCambio: { usd_mxn: 18.31, fecha: '2026-10-25', fuente: 'constante' },
       leyenda: 'No incluye mano de obra',
     },
@@ -87,13 +89,12 @@ test('la vista publica solo expone la lista blanca y recorta el nombre', () => {
   assert.deepEqual(vistaTicketPublico(ticket), {
     vehiculo: { marca: 'Toyota', modelo: 'Corolla', anio: 2020 },
     fallas: ['Frenos'],
-    totalMinMXN: 100,
-    totalMaxMXN: 200,
-    totalMinUSD: 5.46,
-    totalMaxUSD: 10.93,
+    precioFinalMXN: 1500,
+    precioFinalUSD: 81.97,
     tipoCambio: { fecha: '2026-10-25', fuente: 'constante' },
     tasaEstimada: true,
-    leyenda: 'No incluye mano de obra',
+    leyenda: 'Incluye mano de obra',
+    leyendaUSD: 'Precio en USD aproximado, solo referencia; el monto a pagar es en MXN.',
     vigenteHasta: '2026-10-28T12:00:00.000Z',
     cliente: { nombre: 'Ana' },
   });
@@ -108,6 +109,8 @@ test('la vista publica solo expone la lista blanca y recorta el nombre', () => {
     'decisiones',
     'comentario',
     'no debe salir',
+    'totalMin',
+    'totalMax',
   ]) {
     assert.equal(serializado.includes(prohibido), false, `no debe salir ${prohibido}`);
   }

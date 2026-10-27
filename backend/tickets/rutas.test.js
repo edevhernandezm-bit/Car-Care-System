@@ -48,6 +48,7 @@ test('montarTickets registra /api/tickets con el interruptor encendido', () => {
 function ticketBase(extra = {}) {
   return {
     _id: new mongoose.Types.ObjectId(),
+    diagnosticoId: new mongoose.Types.ObjectId(),
     estado: 'diagnosticado',
     cliente: { nombre: 'Ana', correo: 'ana@example.com' },
     vehiculo: { marca: 'Toyota', modelo: 'Corolla', anio: 2020 },
@@ -70,6 +71,7 @@ function ticketBase(extra = {}) {
       tipoCambio: { usd_mxn: 18.3, fecha: '2026-10-25', fuente: 'estimada' },
       leyenda: 'No incluye mano de obra',
     },
+    precios: [],
     envio: { enviado: false, intentos: 0 },
     ...extra,
   };
@@ -88,18 +90,41 @@ function consulta(resultado) {
   return q;
 }
 
-function appCon({ ticket, mailer, resultado, actualizaciones = [], transiciones = [] }) {
+function aplicarSet(documento, cambios) {
+  const copia = { ...documento };
+  for (const [ruta, valor] of Object.entries(cambios || {})) {
+    const partes = ruta.split('.');
+    let actual = copia;
+    for (const parte of partes.slice(0, -1)) {
+      actual[parte] = { ...(actual[parte] || {}) };
+      actual = actual[parte];
+    }
+    actual[partes[partes.length - 1]] = valor;
+  }
+  return copia;
+}
+
+function appCon({
+  ticket,
+  mailer,
+  resultado,
+  actualizaciones = [],
+  transiciones = [],
+  candidatos = [],
+}) {
   const final = resultado === undefined ? ticket : resultado;
   // La primera lectura es el ticket a enviar; las siguientes, el documento ya
   // actualizado que devuelve la ruta.
   let lecturas = 0;
   const Ticket = {
     findById: () => consulta(++lecturas === 1 ? ticket : final),
-    find: () => consulta(Array.isArray(final) ? final : [final]),
+    find: (filtro) =>
+      consulta(filtro?.tokenVenceEn ? candidatos : Array.isArray(final) ? final : [final]),
     countDocuments: async () => (Array.isArray(final) ? final.length : 1),
     async findOneAndUpdate(_filtro, update) {
       transiciones.push(update);
-      return { ...ticket, estado: 'cotizacion_enviada' };
+      const actualizado = aplicarSet(ticket, update.$set);
+      return { ...actualizado, estado: actualizado.estado || 'cotizacion_enviada' };
     },
     async updateOne(_filtro, update) {
       actualizaciones.push(update);
@@ -137,8 +162,14 @@ async function conServidor(app, fn) {
   }
 }
 
-async function enviar(app, id) {
-  return conServidor(app, (base) => fetch(`${base}/api/tickets/${id}/enviar`, { method: 'POST' }));
+async function enviar(app, id, body = { precioFinalMXN: 19.99 }) {
+  return conServidor(app, (base) =>
+    fetch(`${base}/api/tickets/${id}/enviar`, {
+      method: 'POST',
+      headers: body === null ? undefined : { 'Content-Type': 'application/json' },
+      body: body === null ? undefined : JSON.stringify(body),
+    })
+  );
 }
 
 function capturarErrores(fn) {
@@ -386,4 +417,141 @@ test('reenviar desde rechazado reinicia el envio y conserva las decisiones', asy
   assert.equal(update.$set.decisiones, undefined, 'las decisiones no se reescriben');
   assert.equal(update.$push.historial.de, 'rechazado');
   assert.equal(update.$push.decisiones, undefined);
+});
+
+test('enviar rechaza precios ausentes o inválidos antes de tocar Mongo', async () => {
+  const casos = [
+    ['sin cuerpo', null],
+    ['sin la clave', {}],
+    ['tres decimales', { precioFinalMXN: 10.001 }],
+    ['texto', { precioFinalMXN: '500' }],
+    ['notación exponencial', { precioFinalMXN: '1e3' }],
+    ['NaN', { precioFinalMXN: NaN }],
+    ['Infinity', { precioFinalMXN: Infinity }],
+    ['cero', { precioFinalMXN: 0 }],
+    ['negativo', { precioFinalMXN: -1 }],
+    ['fuera del máximo', { precioFinalMXN: 10000000 }],
+  ];
+
+  for (const [nombre, body] of casos) {
+    const ticket = ticketBase();
+    const actualizaciones = [];
+    const transiciones = [];
+    let correos = 0;
+    const app = appCon({
+      ticket,
+      actualizaciones,
+      transiciones,
+      mailer: { enviarCotizacion: async () => { correos += 1; return {}; } },
+    });
+
+    const respuesta = await enviar(app, ticket._id, body);
+    assert.equal(respuesta.status, 422, nombre);
+    assert.deepEqual(await respuesta.json(), { error: 'Datos no válidos' }, nombre);
+    assert.equal(actualizaciones.length, 0, `${nombre}: no registra intento`);
+    assert.equal(transiciones.length, 0, `${nombre}: no cambia el ticket`);
+    assert.equal(correos, 0, `${nombre}: no manda correo`);
+  }
+});
+
+test('un precio válido fija MXN, USD y agrega precios[] en la misma transición', async () => {
+  const ticket = ticketBase();
+  const transiciones = [];
+  const resumenes = [];
+  const app = appCon({
+    ticket,
+    transiciones,
+    mailer: {
+      async enviarCotizacion(datos) {
+        resumenes.push(datos.resumen);
+        return { id: 'correo-1' };
+      },
+    },
+  });
+
+  const respuesta = await enviar(app, ticket._id, { precioFinalMXN: 1234.5 });
+  assert.equal(respuesta.status, 200);
+  assert.equal(transiciones.length, 1);
+  const update = transiciones[0];
+  assert.equal(update.$set['cotizacion.precioFinalMXN'], 1234.5);
+  assert.equal(update.$set['cotizacion.precioFinalUSD'], Math.round(123450 / 18.3) / 100);
+  assert.equal(update.$set['cotizacion.leyenda'], 'Incluye mano de obra');
+  assert.equal(update.$set['envio.enviado'], false);
+  assert.equal(update.$push.precios.precioFinalMXN, 1234.5);
+  assert.ok(update.$push.precios.en instanceof Date);
+  assert.ok(update.$push.precios.por);
+  assert.equal(resumenes[0].precioFinalMXN, 1234.5);
+  assert.equal(resumenes[0].precioFinalUSD, Math.round(123450 / 18.3) / 100);
+  assert.equal(resumenes[0].leyenda, 'Incluye mano de obra');
+});
+
+test('el reintento de un envío fallido también reemplaza el precio y el token', async () => {
+  const ticket = ticketBase({
+    estado: 'cotizacion_enviada',
+    envio: { enviado: false, intentos: 1 },
+  });
+  const transiciones = [];
+  const app = appCon({
+    ticket,
+    transiciones,
+    mailer: { enviarCotizacion: async () => ({ id: 'correo-1' }) },
+  });
+
+  const respuesta = await enviar(app, ticket._id, { precioFinalMXN: 0.1 });
+  assert.equal(respuesta.status, 200);
+  const update = transiciones[0];
+  assert.equal(update.$set['cotizacion.precioFinalMXN'], 0.1);
+  assert.equal(update.$set['cotizacion.precioFinalUSD'], Math.round(10 / 18.3) / 100);
+  assert.equal(update.$push.precios.precioFinalMXN, 0.1);
+  assert.equal(typeof update.$set.tokenHash, 'string');
+});
+
+test('la lista vence primero los candidatos con token expirado', async () => {
+  const ticket = ticketBase({
+    estado: 'cotizacion_enviada',
+    tokenHash: 'a'.repeat(64),
+    tokenVenceEn: new Date('2020-01-01T00:00:00.000Z'),
+    envio: { enviado: true, intentos: 1 },
+  });
+  const transiciones = [];
+  const app = appCon({
+    ticket,
+    resultado: [ticket],
+    candidatos: [{ _id: ticket._id }],
+    transiciones,
+    mailer: { enviarCotizacion: async () => ({}) },
+  });
+
+  await conServidor(app, async (base) => {
+    const respuesta = await fetch(`${base}/api/tickets`);
+    assert.equal(respuesta.status, 200);
+  });
+  assert.equal(transiciones.length, 1);
+  assert.equal(transiciones[0].$set.estado, 'vencido');
+});
+
+test('GET /atencion devuelve solo ids y estado, sin datos del cliente', async () => {
+  const ticket = ticketBase({ estado: 'autorizado' });
+  const app = appCon({
+    ticket,
+    resultado: [ticket],
+    mailer: { enviarCotizacion: async () => ({}) },
+  });
+
+  await conServidor(app, async (base) => {
+    const respuesta = await fetch(`${base}/api/tickets/atencion`);
+    assert.equal(respuesta.status, 200);
+    const cuerpo = await respuesta.json();
+    assert.deepEqual(cuerpo, {
+      tickets: [
+        {
+          ticketId: String(ticket._id),
+          diagnosticoId: String(ticket.diagnosticoId),
+          estado: 'autorizado',
+        },
+      ],
+    });
+    assert.equal(JSON.stringify(cuerpo).includes('ana@example.com'), false);
+    assert.equal(JSON.stringify(cuerpo).includes('Ana'), false);
+  });
 });

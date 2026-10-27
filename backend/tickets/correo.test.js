@@ -9,6 +9,18 @@ const {
   crearMailer,
 } = require('./correo');
 
+function resumenBase(extra = {}) {
+  return {
+    vehiculo: 'Toyota',
+    fallas: ['Frenos'],
+    precioFinalMXN: 1500,
+    precioFinalUSD: 81.97,
+    leyenda: 'Incluye mano de obra',
+    tipoCambio: { usd_mxn: 18.3, fecha: '2026-10-25', fuente: 'frankfurter' },
+    ...extra,
+  };
+}
+
 test('escapa los cinco caracteres peligrosos de HTML', () => {
   assert.equal(escaparHtml(`<a href="x">Tom & Jerry's</a>`), '&lt;a href=&quot;x&quot;&gt;Tom &amp; Jerry&#39;s&lt;/a&gt;');
 });
@@ -20,7 +32,8 @@ test('la plantilla no deja pasar HTML del cliente', () => {
     resumen: {
       vehiculo: '<img src=x onerror=alert(1)>',
       fallas: ['<b>frenos</b>'],
-      totales: '100 - 200 MXN',
+      precioFinalMXN: 100,
+      precioFinalUSD: 5.46,
     },
   });
   assert.equal(html.includes('<script>'), false);
@@ -32,17 +45,50 @@ test('la plantilla no deja pasar HTML del cliente', () => {
   assert.equal(subject.includes('\n'), false);
 });
 
+test('la plantilla muestra precio final, leyenda, tasa, fecha y aviso de USD', () => {
+  const { html, text, subject } = plantillaCotizacion({
+    nombre: 'Ana',
+    enlace: 'https://car-care.test/cotizacion#abc',
+    resumen: resumenBase(),
+  });
+
+  for (const contenido of [html, text]) {
+    assert.match(contenido, /Precio final: \$1500\.00 MXN \(aprox\. \$81\.97 USD\)/);
+    assert.match(contenido, /Incluye mano de obra/);
+    assert.match(contenido, /aproximado, solo referencia/);
+    assert.match(contenido, /monto a pagar es en MXN/i);
+    assert.match(contenido, /1 USD = 18\.3 MXN/);
+    assert.match(contenido, /2026-10-25/);
+    assert.doesNotMatch(contenido, /No incluye mano de obra/);
+    assert.doesNotMatch(contenido, /Total estimado/);
+  }
+  assert.match(html, /<meta charset="UTF-8">/);
+  assert.match(html, /Cotización de reparación/);
+  assert.match(html, /vehículo/);
+  assert.match(text, /Cotización de reparación/);
+  assert.match(subject, /Cotización de reparación/);
+});
+
+test('rechaza un resumen sin precio final válido', () => {
+  assert.throws(
+    () =>
+      plantillaCotizacion({
+        nombre: 'Ana',
+        enlace: 'https://car-care.test/cotizacion#abc',
+        resumen: { vehiculo: 'Toyota' },
+      }),
+    /precio final/
+  );
+});
+
 test('rotula la tasa estimada e incluye su fecha', () => {
   for (const fuente of ['constante', 'estimada']) {
     const { html, text } = plantillaCotizacion({
       nombre: 'Ana',
       enlace: 'https://car-care.test/cotizacion#abc',
-      resumen: {
-        vehiculo: 'Toyota',
-        fallas: ['Frenos'],
-        totales: '100 - 200 MXN',
+      resumen: resumenBase({
         tipoCambio: { usd_mxn: 18.3, fecha: '2026-10-25', fuente },
-      },
+      }),
     });
     assert.match(html, /Tipo de cambio estimado/);
     assert.match(html, /2026-10-25/);
@@ -50,15 +96,14 @@ test('rotula la tasa estimada e incluye su fecha', () => {
   }
 });
 
-test('no rotula una tasa de mercado', () => {
+test('no rotula una tasa de mercado como estimada', () => {
   const { html } = plantillaCotizacion({
     nombre: 'Ana',
     enlace: 'https://car-care.test/cotizacion#abc',
-    resumen: {
-      tipoCambio: { usd_mxn: 18.3, fecha: '2026-10-25', fuente: 'frankfurter' },
-    },
+    resumen: resumenBase(),
   });
   assert.doesNotMatch(html, /Tipo de cambio estimado/);
+  assert.match(html, /Tipo de cambio \(2026-10-25\)/);
 });
 
 test('rechaza un enlace que no sea http(s)', () => {
@@ -105,7 +150,7 @@ test('fake guarda en la coleccion inyectada', async () => {
     para: 'ana@example.com',
     nombre: 'Ana',
     enlace: 'https://car-care.test/cotizacion#abc',
-    resumen: { vehiculo: 'Toyota Corolla', fallas: ['Frenos'], totales: '100 - 200 MXN' },
+    resumen: resumenBase({ vehiculo: 'Toyota Corolla', fallas: ['Frenos'] }),
   });
 
   assert.deepEqual(resultado, { id: 'correo-1' });
@@ -141,7 +186,7 @@ test('resend envia por HTTPS con la clave en el encabezado', async () => {
     para: 'ana@example.com',
     nombre: 'Ana',
     enlace: 'https://car-care.test/cotizacion#abc',
-    resumen: { vehiculo: 'Toyota', fallas: ['Frenos'], totales: '100 - 200 MXN' },
+    resumen: resumenBase({ vehiculo: 'Toyota', fallas: ['Frenos'] }),
   });
 
   assert.deepEqual(resultado, { id: 'resend-1' });
@@ -203,7 +248,7 @@ test('resend: tiempo agotado y error de red llevan su codigo fijo', async () => 
           para: 'ana@example.com',
           nombre: 'Ana',
           enlace: 'https://car-care.test/cotizacion#abc',
-          resumen: {},
+          resumen: resumenBase(),
         }),
       (error) => error.codigo === 'tiempo_agotado'
     );
@@ -214,7 +259,7 @@ test('resend: tiempo agotado y error de red llevan su codigo fijo', async () => 
           para: 'ana@example.com',
           nombre: 'Ana',
           enlace: 'https://car-care.test/cotizacion#abc',
-          resumen: {},
+          resumen: resumenBase(),
         }),
       (error) => error.codigo === 'error_red'
     );
@@ -243,7 +288,7 @@ test('resend: el status del proveedor se codifica como proveedor_<status>', asyn
             para: 'ana@example.com',
             nombre: 'Ana',
             enlace: 'https://car-care.test/cotizacion#abc',
-            resumen: {},
+            resumen: resumenBase(),
           }),
         (error) => {
           assert.equal(error.codigo, `proveedor_${status}`);
@@ -277,7 +322,7 @@ test('resend falla sin filtrar destinatario ni cuerpo', async () => {
           para: 'ana@example.com',
           nombre: 'Ana',
           enlace: 'https://car-care.test/cotizacion#abc',
-          resumen: {},
+          resumen: resumenBase(),
         }),
       (error) => {
         assert.match(error.message, /500/);

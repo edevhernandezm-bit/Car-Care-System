@@ -1,7 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { LEYENDA, calcularCotizacion, precioCatalogoEnMXN } = require('./cotizacion');
+const {
+  LEYENDA,
+  LEYENDA_PRECIO_FINAL,
+  centavosPrecioFinal,
+  calcularCotizacion,
+  precioCatalogoEnMXN,
+} = require('./cotizacion');
 
 const diagnostico = [
   { falla: 'bateria', nombre: 'Bateria' },
@@ -154,3 +160,33 @@ test('rechaza un tipo de cambio invalido', () => {
   assert.throws(() => cotizar(seleccion, { usd_mxn: NaN }), /tipo de cambio/);
   assert.throws(() => cotizar(seleccion, null), /tipo de cambio/);
 });
+
+test('la leyenda del precio final incluye la mano de obra', () => {
+  assert.equal(LEYENDA_PRECIO_FINAL, 'Incluye mano de obra');
+});
+
+for (const [valor, centavos] of [
+  [19.99, 1999],
+  [0.1, 10],
+  [1234.5, 123450],
+  [9999999.99, 999999999],
+]) {
+  test(`acepta el precio final ${valor}`, () => {
+    assert.equal(centavosPrecioFinal(valor), centavos);
+  });
+}
+
+for (const [nombre, valor] of [
+  ['tres decimales', 10.001],
+  ['texto', '500'],
+  ['notación exponencial', '1e3'],
+  ['NaN', NaN],
+  ['Infinity', Infinity],
+  ['cero', 0],
+  ['negativo', -1],
+  ['fuera del máximo', 10000000],
+]) {
+  test(`rechaza el precio final con ${nombre}`, () => {
+    assert.equal(centavosPrecioFinal(valor), null);
+  });
+}

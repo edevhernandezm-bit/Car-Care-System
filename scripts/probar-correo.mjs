@@ -35,10 +35,10 @@ async function main() {
 
   const resumen = {
     vehiculo: 'Toyota Corolla 2020',
-    fallas: ['Frenos delanteros', 'Bateria'],
-    totales:
-      'Total estimado: $1,500.00 - $2,300.00 MXN ($81.97 - $125.68 USD).',
-    leyenda: 'No incluye mano de obra',
+    fallas: ['Frenos delanteros', 'Batería'],
+    precioFinalMXN: 1500,
+    precioFinalUSD: 81.97,
+    leyenda: 'Incluye mano de obra',
     tipoCambio: {
       usd_mxn: 18.3,
       fecha: new Date().toISOString().slice(0, 10),

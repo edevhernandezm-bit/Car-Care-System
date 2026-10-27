@@ -1,4 +1,17 @@
 const LEYENDA = 'No incluye mano de obra';
+const LEYENDA_PRECIO_FINAL = 'Incluye mano de obra';
+const PRECIO_FINAL_MAX = 9999999.99;
+
+// Devuelve el precio en centavos o null si no es un numero JSON con a lo sumo
+// dos decimales. Redondear primero evita rechazar 0.1 por su representacion
+// binaria, pero 10.001 sigue fallando porque su centavo no es entero.
+function centavosPrecioFinal(valor) {
+  if (typeof valor !== 'number' || !Number.isFinite(valor)) return null;
+  if (valor <= 0 || valor > PRECIO_FINAL_MAX) return null;
+  const centavos = Math.round(valor * 100);
+  if (Math.abs(valor * 100 - centavos) >= 1e-6) return null;
+  return centavos;
+}
 
 // Los precios llegan como numero decimal; se suman en centavos enteros para
 // que 0.1 + 0.2 no se convierta en 0.30000000000000004.
@@ -116,4 +129,11 @@ function calcularCotizacion({ fallasSeleccionadas, fallasDiagnostico, tipoCambio
   };
 }
 
-module.exports = { LEYENDA, calcularCotizacion, precioCatalogoEnMXN };
+module.exports = {
+  LEYENDA,
+  LEYENDA_PRECIO_FINAL,
+  PRECIO_FINAL_MAX,
+  centavosPrecioFinal,
+  calcularCotizacion,
+  precioCatalogoEnMXN,
+};
