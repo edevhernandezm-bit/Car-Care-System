@@ -11,10 +11,14 @@ function escaparHtml(valor) {
   return String(valor ?? '').replace(/[&<>"']/g, (caracter) => ESCAPES[caracter]);
 }
 
+function errorEnvio(codigo, mensaje) {
+  return Object.assign(new Error(mensaje), { codigo });
+}
+
 function validarDestinatario(para) {
   const limpio = typeof para === 'string' ? para.trim() : '';
   if (limpio.length > 254 || !CORREO_RE.test(limpio)) {
-    throw new Error('Destinatario invalido.');
+    throw errorEnvio('destinatario_invalido', 'Destinatario invalido.');
   }
   return limpio;
 }
@@ -131,6 +135,10 @@ function crearMailer({
     return {
       async enviarCotizacion(datos) {
         const para = validarDestinatario(datos?.para);
+        // Solo el fake puede simular el fallo: en produccion esta prohibido.
+        if (para.slice(para.lastIndexOf('@') + 1).toLowerCase() === 'falla.example') {
+          throw errorEnvio('simulado', 'Fallo de envio simulado.');
+        }
         const { subject, html, text } = plantillaCotizacion(datos);
         const resultado = await obtenerColeccion().insertOne({
           para,
@@ -166,14 +174,21 @@ function crearMailer({
           });
         } catch (error) {
           // Solo el tipo de fallo: ni cuerpo, ni destinatario, ni clave.
-          const motivo = error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'tiempo agotado' : 'error de red';
+          const agotado = error?.name === 'TimeoutError' || error?.name === 'AbortError';
+          const motivo = agotado ? 'tiempo agotado' : 'error de red';
           console.error(`[correo] ${motivo} al contactar al proveedor.`);
-          throw new Error('No se pudo contactar al proveedor de correo.');
+          throw errorEnvio(
+            agotado ? 'tiempo_agotado' : 'error_red',
+            'No se pudo contactar al proveedor de correo.'
+          );
         }
 
         if (!respuesta.ok) {
           console.error(`[correo] el proveedor respondio ${respuesta.status}.`);
-          throw new Error(`El proveedor de correo respondio ${respuesta.status}.`);
+          const codigo = /^\d{3}$/.test(String(respuesta.status))
+            ? `proveedor_${respuesta.status}`
+            : 'desconocido';
+          throw errorEnvio(codigo, `El proveedor de correo respondio ${respuesta.status}.`);
         }
 
         const cuerpo = await respuesta.json().catch(() => ({}));

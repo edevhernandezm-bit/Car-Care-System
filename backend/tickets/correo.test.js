@@ -70,7 +70,11 @@ test('rechaza un enlace que no sea http(s)', () => {
 
 test('valida el destinatario sin filtrar el correo en el error', () => {
   assert.equal(validarDestinatario('  ana@example.com  '), 'ana@example.com');
-  assert.throws(() => validarDestinatario('ana@'), /Destinatario invalido/);
+  assert.throws(() => validarDestinatario('ana@'), (error) => {
+    assert.equal(error.codigo, 'destinatario_invalido');
+    assert.equal(error.message.includes('ana@'), false);
+    return true;
+  });
   assert.throws(() => validarDestinatario('a'.repeat(250) + '@x.com'), /Destinatario invalido/);
 });
 
@@ -148,6 +152,109 @@ test('resend envia por HTTPS con la clave en el encabezado', async () => {
   const cuerpo = JSON.parse(peticiones[0].opciones.body);
   assert.deepEqual(cuerpo.to, ['ana@example.com']);
   assert.equal(cuerpo.from, 'Car Care <onboarding@resend.dev>');
+});
+
+test('fake: un correo @falla.example falla simulado y no guarda nada', async () => {
+  const guardados = [];
+  const coleccion = {
+    async insertOne(documento) {
+      guardados.push(documento);
+      return { insertedId: 'correo-1' };
+    },
+  };
+  const mailer = crearMailer({ mailProvider: 'fake', nodeEnv: 'development', coleccion });
+
+  await assert.rejects(
+    () =>
+      mailer.enviarCotizacion({
+        para: 'ana@falla.example',
+        nombre: 'Ana',
+        enlace: 'https://car-care.test/cotizacion#abc',
+        resumen: {},
+      }),
+    (error) => {
+      assert.equal(error.codigo, 'simulado');
+      assert.equal(error.message.includes('ana@falla.example'), false);
+      return true;
+    }
+  );
+  assert.equal(guardados.length, 0, 'el fallo simulado no guarda correo');
+});
+
+test('resend: tiempo agotado y error de red llevan su codigo fijo', async () => {
+  const original = console.error;
+  console.error = () => {};
+  try {
+    const conFallo = (nombre) =>
+      crearMailer({
+        mailProvider: 'resend',
+        mailFrom: 'Car Care <onboarding@resend.dev>',
+        mailApiKey: 'clave-secreta',
+        async fetchImpl() {
+          const error = new Error('detalle interno');
+          error.name = nombre;
+          throw error;
+        },
+      });
+
+    await assert.rejects(
+      () =>
+        conFallo('TimeoutError').enviarCotizacion({
+          para: 'ana@example.com',
+          nombre: 'Ana',
+          enlace: 'https://car-care.test/cotizacion#abc',
+          resumen: {},
+        }),
+      (error) => error.codigo === 'tiempo_agotado'
+    );
+
+    await assert.rejects(
+      () =>
+        conFallo('TypeError').enviarCotizacion({
+          para: 'ana@example.com',
+          nombre: 'Ana',
+          enlace: 'https://car-care.test/cotizacion#abc',
+          resumen: {},
+        }),
+      (error) => error.codigo === 'error_red'
+    );
+  } finally {
+    console.error = original;
+  }
+});
+
+test('resend: el status del proveedor se codifica como proveedor_<status>', async () => {
+  const original = console.error;
+  console.error = () => {};
+  try {
+    for (const status of [403, 500]) {
+      const mailer = crearMailer({
+        mailProvider: 'resend',
+        mailFrom: 'Car Care <onboarding@resend.dev>',
+        mailApiKey: 'clave-secreta',
+        async fetchImpl() {
+          return { ok: false, status, async json() { return { mensaje: 'detalle interno' }; } };
+        },
+      });
+
+      await assert.rejects(
+        () =>
+          mailer.enviarCotizacion({
+            para: 'ana@example.com',
+            nombre: 'Ana',
+            enlace: 'https://car-care.test/cotizacion#abc',
+            resumen: {},
+          }),
+        (error) => {
+          assert.equal(error.codigo, `proveedor_${status}`);
+          assert.equal(error.message.includes('detalle interno'), false);
+          return true;
+        }
+      );
+    }
+  } finally {
+    console.error = original;
+  }
 });
 
 test('resend falla sin filtrar destinatario ni cuerpo', async () => {

@@ -46,7 +46,31 @@ test('el estado inicial y el envio tienen valores seguros', () => {
   assert.equal(ticket.estado, 'diagnosticado');
   assert.equal(ticket.envio.enviado, false);
   assert.equal(ticket.envio.intentos, 0);
-  assert.equal(ticket.envio.ultimoError, '');
+  assert.equal(ticket.envio.codigoError, undefined);
+  assert.equal(ticket.envio.ultimoIntentoEn, undefined);
+});
+
+test('acepta solo los codigos de error fijos y proveedor_<3 digitos>', async () => {
+  for (const codigo of [
+    'tiempo_agotado',
+    'error_red',
+    'sin_proveedor',
+    'destinatario_invalido',
+    'simulado',
+    'desconocido',
+    'proveedor_403',
+    'proveedor_500',
+  ]) {
+    const ticket = ticketValido();
+    ticket.envio.codigoError = codigo;
+    assert.equal(await errores(ticket), null, codigo);
+  }
+
+  for (const codigo of ['proveedor_40', 'proveedor_5000', 'texto libre', 'ana@example.com']) {
+    const ticket = ticketValido();
+    ticket.envio.codigoError = codigo;
+    assert.ok((await errores(ticket))['envio.codigoError'], codigo);
+  }
 });
 
 test('valida el formato y el largo del correo', async () => {

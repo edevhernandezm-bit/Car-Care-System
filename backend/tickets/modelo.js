@@ -15,6 +15,21 @@ const CORREO_MAX = 254;
 const NOMBRE_MAX = 120;
 const TELEFONO_MAX = 30;
 
+// Solo codigos fijos: el detalle del proveedor nunca entra en el documento.
+const CODIGOS_ERROR = [
+  'tiempo_agotado',
+  'error_red',
+  'sin_proveedor',
+  'destinatario_invalido',
+  'simulado',
+  'desconocido',
+];
+const PROVEEDOR_RE = /^proveedor_\d{3}$/;
+
+function codigoErrorValido(valor) {
+  return CODIGOS_ERROR.includes(valor) || PROVEEDOR_RE.test(String(valor ?? ''));
+}
+
 // Formato simple a proposito: evita guardar basura, no decide si el buzon existe.
 const CORREO_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -87,7 +102,14 @@ const ticketSchema = new mongoose.Schema(
     envio: {
       enviado: { type: Boolean, default: false },
       intentos: { type: Number, default: 0, min: 0 },
-      ultimoError: { type: String, default: '', maxlength: 300 },
+      codigoError: {
+        type: String,
+        validate: {
+          validator: (v) => v === undefined || v === null || codigoErrorValido(v),
+          message: 'codigoError invalido',
+        },
+      },
+      ultimoIntentoEn: { type: Date },
     },
     // Nunca null: al salir de cotizacion_enviada se elimina con $unset.
     tokenHash: {
@@ -123,6 +145,9 @@ module.exports = {
   Ticket,
   ticketSchema,
   esClaveDuplicada,
+  codigoErrorValido,
+  CODIGOS_ERROR,
+  PROVEEDOR_RE,
   CORREO_MAX,
   CORREO_RE,
   NOMBRE_MAX,

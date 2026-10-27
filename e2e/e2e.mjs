@@ -3546,6 +3546,12 @@ async function postPublico(ruta, body, { rawBody, contentType = 'application/jso
   return { status: res.status, texto: await res.text(), headers: res.headers };
 }
 
+function sinEnlaceNiToken(cuerpo) {
+  const texto = JSON.stringify(cuerpo);
+  assert.equal(texto.includes('cotizacion#'), false, 'ninguna respuesta debe traer el enlace');
+  assert.doesNotMatch(texto, /[A-Za-z0-9_-]{43}/, 'ninguna respuesta debe traer un token');
+}
+
 test('40 | Tickets: rol, catalogo del servidor, conversion con la tasa guardada y sin tokens', async () => {
   const cookieAdmin = await sesionGateway();
   const cookieDatos = await sesionEstudianteTickets();
@@ -3602,7 +3608,7 @@ test('40 | Tickets: rol, catalogo del servidor, conversion con la tasa guardada 
   assert.equal(ajeno.status, 422, 'una falla ajena al diagnostico no se cotiza');
 });
 
-test('41 | Tickets: enviar, leer el enlace fake, reenviar tras fallo y no autorizar por PATCH', async () => {
+test('41 | Tickets: enviar, fallo simulado, reintento limpia el codigo y GET no filtra enlace ni token', async () => {
   const cookieAdmin = await sesionGateway();
   const cookieDatos = await sesionEstudianteTickets();
   const correo = `tickets-envio-${Date.now()}@example.com`;
@@ -3617,7 +3623,10 @@ test('41 | Tickets: enviar, leer el enlace fake, reenviar tras fallo y no autori
   assert.equal(enviado.status, 200, 'el correo fake debe aceptar el envio');
   const ticketEnviado = enviado.body;
   assert.equal(ticketEnviado.envio.enviado, true);
+  assert.equal(ticketEnviado.envio.codigoError, undefined, 'un exito no deja codigo');
+  assert.ok(Number.isFinite(Date.parse(ticketEnviado.envio.ultimoIntentoEn)));
   assert.equal(JSON.stringify(ticketEnviado).includes('tokenHash'), false);
+  sinEnlaceNiToken(ticketEnviado);
 
   const require = createRequire(import.meta.url);
   const m = require(path.join(BACKEND_DIR, 'node_modules', 'mongoose'));
@@ -3639,19 +3648,46 @@ test('41 | Tickets: enviar, leer el enlace fake, reenviar tras fallo y no autori
   assert.ok(token1.length > 20, 'el enlace debe llevar el token en el fragmento');
   assert.equal(enlace, `${WEB_URL}/cotizacion#${token1}`);
 
-  // Fallo simulado: el ticket queda como cotizacion enviada pero sin envio
-  // confirmado. El reintento debe regenerar el token y volver a enviar.
-  await m.connect(TEST_DB);
-  try {
-    await m.connection.collection('tickets').updateOne(
-      { _id: new m.Types.ObjectId(ticket._id) },
-      { $set: { 'envio.enviado': false, 'envio.ultimoError': 'fallo simulado' } }
-    );
-  } finally {
-    await m.disconnect();
-  }
+  // Fallo simulado desde el flujo normal: el dominio @falla.example lo acepta
+  // el schema del cliente y solo el mailer fake lo convierte en fallo.
+  const correoSimulado = `tickets-simulado-${Date.now()}@falla.example`;
+  const { respuesta: respuestaSimulada } = await crearTicketDePrueba(
+    cookieAdmin,
+    cookieDatos,
+    correoSimulado
+  );
+  assert.equal(respuestaSimulada.status, 201, 'el correo @falla.example debe poder registrarse');
+  const idSimulado = respuestaSimulada.body._id;
 
-  const reenviado = await api(`/api/tickets/${ticket._id}/enviar`, {
+  const fallido = await api(`/api/tickets/${idSimulado}/enviar`, {
+    method: 'POST',
+    cookie: cookieAdmin,
+  });
+  assert.equal(fallido.status, 502, 'el fallo simulado responde 502');
+  assert.equal(await ultimoCorreo(correoSimulado), null, 'el fallo simulado no guarda correo');
+  sinEnlaceNiToken(fallido.body);
+
+  const detalleFallo = await api(`/api/tickets/${idSimulado}`, { cookie: cookieAdmin });
+  assert.equal(detalleFallo.status, 200);
+  assert.deepEqual(Object.keys(detalleFallo.body.envio).sort(), [
+    'codigoError',
+    'enviado',
+    'intentos',
+    'ultimoIntentoEn',
+  ]);
+  assert.equal(detalleFallo.body.estado, 'cotizacion_enviada');
+  assert.equal(detalleFallo.body.envio.enviado, false, 'el fallo deja envio pendiente');
+  assert.equal(detalleFallo.body.envio.intentos, 1);
+  assert.equal(detalleFallo.body.envio.codigoError, 'simulado');
+  const fechaFallo = Date.parse(detalleFallo.body.envio.ultimoIntentoEn);
+  assert.ok(Number.isFinite(fechaFallo), 'el fallo registra la fecha del intento');
+  assert.equal(JSON.stringify(detalleFallo.body).includes('ana@falla.example'), false);
+  assert.equal(JSON.stringify(detalleFallo.body).includes('tokenHash'), false);
+  sinEnlaceNiToken(detalleFallo.body);
+
+  // El reintento exitoso limpia el codigo y conserva (actualizada) la fecha.
+  await actualizarTicket(idSimulado, { $set: { 'cliente.correo': correo } });
+  const reenviado = await api(`/api/tickets/${idSimulado}/enviar`, {
     method: 'POST',
     cookie: cookieAdmin,
   });
@@ -3659,6 +3695,11 @@ test('41 | Tickets: enviar, leer el enlace fake, reenviar tras fallo y no autori
   const ticketReenviado = reenviado.body;
   assert.equal(ticketReenviado.envio.enviado, true);
   assert.equal(ticketReenviado.envio.intentos, 2);
+  assert.equal(ticketReenviado.envio.codigoError, undefined, 'el exito limpia el codigo');
+  const fechaReintento = Date.parse(ticketReenviado.envio.ultimoIntentoEn);
+  assert.ok(Number.isFinite(fechaReintento));
+  assert.ok(fechaReintento >= fechaFallo, 'la fecha del intento se conserva y actualiza');
+  sinEnlaceNiToken(ticketReenviado);
 
   await m.connect(TEST_DB);
   let segundo;
@@ -3674,6 +3715,19 @@ test('41 | Tickets: enviar, leer el enlace fake, reenviar tras fallo y no autori
   assert.equal(segundo.length, 2, 'el reintento debe guardar otro correo');
   const token2 = new URL(/href="([^"]+)"/.exec(segundo[0].html)[1]).hash.slice(1);
   assert.notEqual(token2, token1, 'el reintento debe reemplazar el token anterior');
+
+  const lista = await api('/api/tickets?limit=999', { cookie: cookieAdmin });
+  assert.equal(lista.status, 200);
+  const enLista = lista.body.tickets.find((t) => t._id === idSimulado);
+  assert.ok(enLista, 'el ticket simulado debe aparecer en la lista');
+  assert.equal(
+    Object.keys(enLista.envio).every((campo) =>
+      ['enviado', 'intentos', 'codigoError', 'ultimoIntentoEn'].includes(campo)
+    ),
+    true,
+    'la lista solo expone la lista blanca de envio'
+  );
+  sinEnlaceNiToken(lista.body);
 
   const autorizar = await api(`/api/tickets/${ticket._id}/estado`, {
     method: 'PATCH',

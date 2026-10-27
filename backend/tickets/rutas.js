@@ -1,7 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 
-const { esClaveDuplicada } = require('./modelo');
+const { esClaveDuplicada, codigoErrorValido } = require('./modelo');
 const { cambiarEstado, puedeTransicionar } = require('./transiciones');
 const { generarToken, hashToken, calcularVencimiento } = require('./token');
 const { calcularCotizacion, precioCatalogoEnMXN } = require('./cotizacion');
@@ -15,11 +15,20 @@ function idValido(id) {
   return mongoose.isValidObjectId(id);
 }
 
+// Whitelist de lo unico que una respuesta puede decir del envio.
+const CAMPOS_ENVIO = ['enviado', 'intentos', 'codigoError', 'ultimoIntentoEn'];
+
 function sinToken(documento) {
   const objeto = typeof documento?.toObject === 'function' ? documento.toObject() : documento;
   const copia = { ...objeto };
   delete copia.tokenHash;
   delete copia.tokenVenceEn;
+  if (copia.envio) {
+    copia.envio = CAMPOS_ENVIO.reduce((acc, campo) => {
+      if (copia.envio[campo] !== undefined) acc[campo] = copia.envio[campo];
+      return acc;
+    }, {});
+  }
   return copia;
 }
 
@@ -56,17 +65,26 @@ function resumenTicket(ticket) {
   };
 }
 
-async function registrarIntento(Ticket, id, enviado, ultimoError) {
-  return Ticket.updateOne(
-    { _id: id },
-    {
-      $set: {
-        'envio.enviado': enviado,
-        'envio.ultimoError': String(ultimoError || '').slice(0, 300),
-      },
-      $inc: { 'envio.intentos': 1 },
-    }
-  );
+function codigoDeEnvio(error) {
+  return codigoErrorValido(error?.codigo) ? error.codigo : 'desconocido';
+}
+
+// Registra el resultado del intento. En exito se borra el codigo y la fecha del
+// ultimo intento se conserva (actualizada); en fallo se guarda el codigo fijo.
+async function registrarIntento(Ticket, id, enviado, codigo) {
+  const update = {
+    $set: {
+      'envio.enviado': enviado,
+      'envio.ultimoIntentoEn': new Date(),
+    },
+    $inc: { 'envio.intentos': 1 },
+  };
+  if (enviado) {
+    update.$unset = { 'envio.codigoError': '' };
+  } else {
+    update.$set['envio.codigoError'] = codigo;
+  }
+  return Ticket.updateOne({ _id: id }, update);
 }
 
 async function catalogoDelMotor({ pedirAMotor, cabecerasMotor }) {
@@ -117,7 +135,7 @@ function crearRutasTickets({
           .lean(),
         Ticket.countDocuments({}),
       ]);
-      res.json({ tickets, total, limit: tamano, offset: salto });
+      res.json({ tickets: tickets.map(sinToken), total, limit: tamano, offset: salto });
     } catch (error) {
       next(error);
     }
@@ -132,7 +150,7 @@ function crearRutasTickets({
         .select('-tokenHash -tokenVenceEn')
         .lean();
       if (!ticket) return res.status(404).json({ error: 'Ticket no encontrado' });
-      return res.json(ticket);
+      return res.json(sinToken(ticket));
     } catch (error) {
       return next(error);
     }
@@ -291,13 +309,16 @@ function crearRutasTickets({
           enlace,
           resumen: resumenTicket(actualizado),
         });
-      } catch {
-        await registrarIntento(Ticket, id, false, 'No se pudo enviar la cotización.');
+      } catch (error) {
+        const codigo = codigoDeEnvio(error);
+        await registrarIntento(Ticket, id, false, codigo);
+        console.error(`[correo] ticket=${id} codigo=${codigo}`);
         return res.status(502).json({ error: 'No se pudo enviar la cotización' });
       }
 
       if (resultado?.omitido) {
-        await registrarIntento(Ticket, id, false, 'No hay proveedor de correo configurado.');
+        await registrarIntento(Ticket, id, false, 'sin_proveedor');
+        console.error(`[correo] ticket=${id} codigo=sin_proveedor`);
         return res.status(502).json({ error: 'No se pudo enviar la cotización' });
       }
 

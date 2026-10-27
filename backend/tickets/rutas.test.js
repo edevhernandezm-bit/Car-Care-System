@@ -45,10 +45,9 @@ test('montarTickets registra /api/tickets con el interruptor encendido', () => {
   assert.deepEqual(usos, ['/api/tickets']);
 });
 
-test('MAIL_PROVIDER=ninguno responde 502 y deja envio.enviado=false', async () => {
-  const idTicket = new mongoose.Types.ObjectId();
-  const ticket = {
-    _id: idTicket,
+function ticketBase(extra = {}) {
+  return {
+    _id: new mongoose.Types.ObjectId(),
     estado: 'diagnosticado',
     cliente: { nombre: 'Ana', correo: 'ana@example.com' },
     vehiculo: { marca: 'Toyota', modelo: 'Corolla', anio: 2020 },
@@ -71,13 +70,33 @@ test('MAIL_PROVIDER=ninguno responde 502 y deja envio.enviado=false', async () =
       tipoCambio: { usd_mxn: 18.3, fecha: '2026-10-25', fuente: 'estimada' },
       leyenda: 'No incluye mano de obra',
     },
-    envio: { enviado: false, intentos: 0, ultimoError: '' },
+    envio: { enviado: false, intentos: 0 },
+    ...extra,
   };
-  const actualizaciones = [];
+}
+
+// Entregable con la misma forma que devuelve Mongoose (awaitable y encadenable).
+function consulta(resultado) {
+  const q = {
+    select: () => q,
+    sort: () => q,
+    skip: () => q,
+    limit: () => q,
+    lean: async () => resultado,
+  };
+  q.then = (res, rej) => Promise.resolve(resultado).then(res, rej);
+  return q;
+}
+
+function appCon({ ticket, mailer, resultado, actualizaciones = [] }) {
+  const final = resultado === undefined ? ticket : resultado;
+  // La primera lectura es el ticket a enviar; las siguientes, el documento ya
+  // actualizado que devuelve la ruta.
+  let lecturas = 0;
   const Ticket = {
-    async findById() {
-      return ticket;
-    },
+    findById: () => consulta(++lecturas === 1 ? ticket : final),
+    find: () => consulta(Array.isArray(final) ? final : [final]),
+    countDocuments: async () => (Array.isArray(final) ? final.length : 1),
     async findOneAndUpdate() {
       return { ...ticket, estado: 'cotizacion_enviada' };
     },
@@ -101,26 +120,202 @@ test('MAIL_PROVIDER=ninguno responde 502 y deja envio.enviado=false', async () =
       },
       cabecerasMotor: {},
       config: { ticketsEnabled: true, publicAppUrl: 'https://car-care.test' },
-      mailer: { enviarCotizacion: async () => ({ omitido: true }) },
+      mailer,
     })
   );
+  return app;
+}
 
+async function conServidor(app, fn) {
   const servidor = app.listen(0);
   try {
     await new Promise((resolve) => servidor.once('listening', resolve));
-    const puerto = servidor.address().port;
-    const respuesta = await fetch(`http://127.0.0.1:${puerto}/api/tickets/${idTicket}/enviar`, {
-      method: 'POST',
-    });
-    assert.equal(respuesta.status, 502);
-    assert.equal(actualizaciones.length, 1);
-    assert.equal(actualizaciones[0].$set['envio.enviado'], false);
-    assert.equal(actualizaciones[0].$inc['envio.intentos'], 1);
-    assert.equal(
-      actualizaciones[0].$set['envio.ultimoError'].includes('ana@example.com'),
-      false
-    );
+    return await fn(`http://127.0.0.1:${servidor.address().port}`);
   } finally {
     await new Promise((resolve) => servidor.close(resolve));
   }
+}
+
+async function enviar(app, id) {
+  return conServidor(app, (base) => fetch(`${base}/api/tickets/${id}/enviar`, { method: 'POST' }));
+}
+
+function capturarErrores(fn) {
+  const original = console.error;
+  const lineas = [];
+  console.error = (...args) => lineas.push(args.join(' '));
+  return Promise.resolve(fn())
+    .then((resultado) => ({ resultado, lineas }))
+    .finally(() => {
+      console.error = original;
+    });
+}
+
+function sinEnlaceNiToken(cuerpo) {
+  const texto = JSON.stringify(cuerpo);
+  assert.equal(texto.includes('cotizacion#'), false, 'ninguna respuesta debe traer el enlace');
+  assert.doesNotMatch(texto, /[A-Za-z0-9_-]{43}/, 'ninguna respuesta debe traer un token');
+}
+
+test('MAIL_PROVIDER=ninguno responde 502 con codigo sin_proveedor', async () => {
+  const ticket = ticketBase();
+  const actualizaciones = [];
+  const app = appCon({
+    ticket,
+    actualizaciones,
+    mailer: { enviarCotizacion: async () => ({ omitido: true }) },
+  });
+
+  const { resultado: respuesta, lineas } = await capturarErrores(() => enviar(app, ticket._id));
+  assert.equal(respuesta.status, 502);
+  assert.equal(actualizaciones.length, 1);
+  assert.equal(actualizaciones[0].$set['envio.enviado'], false);
+  assert.equal(actualizaciones[0].$set['envio.codigoError'], 'sin_proveedor');
+  assert.ok(actualizaciones[0].$set['envio.ultimoIntentoEn'] instanceof Date);
+  assert.equal(actualizaciones[0].$inc['envio.intentos'], 1);
+  assert.equal(actualizaciones[0].$unset, undefined);
+  assert.deepEqual(lineas, [`[correo] ticket=${ticket._id} codigo=sin_proveedor`]);
+  assert.equal(JSON.stringify(await respuesta.json()).includes('ana@example.com'), false);
+});
+
+test('un error del mailer con codigo fijo se guarda y se loguea sin texto libre', async () => {
+  for (const codigo of [
+    'simulado',
+    'tiempo_agotado',
+    'error_red',
+    'proveedor_403',
+    'proveedor_500',
+    'destinatario_invalido',
+  ]) {
+    const ticket = ticketBase();
+    const actualizaciones = [];
+    const app = appCon({
+      ticket,
+      actualizaciones,
+      mailer: {
+        async enviarCotizacion() {
+          throw Object.assign(new Error('texto libre ana@example.com'), { codigo });
+        },
+      },
+    });
+
+    const { resultado: respuesta, lineas } = await capturarErrores(() => enviar(app, ticket._id));
+    assert.equal(respuesta.status, 502, codigo);
+    assert.equal(actualizaciones[0].$set['envio.codigoError'], codigo);
+    assert.deepEqual(lineas, [`[correo] ticket=${ticket._id} codigo=${codigo}`]);
+    assert.equal(lineas.join(' ').includes('texto libre'), false);
+  }
+});
+
+test('un error del mailer sin codigo o con codigo invalido se registra como desconocido', async () => {
+  for (const error of [
+    new Error('texto libre ana@example.com'),
+    Object.assign(new Error('otro'), { codigo: 'texto libre' }),
+    Object.assign(new Error('otro'), { codigo: 'proveedor_40' }),
+  ]) {
+    const ticket = ticketBase();
+    const actualizaciones = [];
+    const app = appCon({
+      ticket,
+      actualizaciones,
+      mailer: {
+        async enviarCotizacion() {
+          throw error;
+        },
+      },
+    });
+
+    const { resultado: respuesta, lineas } = await capturarErrores(() => enviar(app, ticket._id));
+    assert.equal(respuesta.status, 502);
+    assert.equal(actualizaciones[0].$set['envio.codigoError'], 'desconocido');
+    assert.deepEqual(lineas, [`[correo] ticket=${ticket._id} codigo=desconocido`]);
+    assert.equal(lineas.join(' ').includes('ana@example.com'), false);
+  }
+});
+
+test('el exito limpia codigoError y actualiza ultimoIntentoEn', async () => {
+  const anterior = new Date('2026-10-01T00:00:00.000Z');
+  const ticket = ticketBase({
+    estado: 'cotizacion_enviada',
+    envio: { enviado: false, intentos: 1, codigoError: 'simulado', ultimoIntentoEn: anterior },
+  });
+  const actualizaciones = [];
+  const final = {
+    ...ticket,
+    envio: { enviado: true, intentos: 2, ultimoIntentoEn: new Date() },
+  };
+  const app = appCon({
+    ticket,
+    resultado: final,
+    actualizaciones,
+    mailer: { enviarCotizacion: async () => ({ id: 'correo-1' }) },
+  });
+
+  const respuesta = await enviar(app, ticket._id);
+  assert.equal(respuesta.status, 200);
+  assert.equal(actualizaciones[0].$set['envio.enviado'], true);
+  assert.ok(actualizaciones[0].$set['envio.ultimoIntentoEn'] instanceof Date);
+  assert.equal(actualizaciones[0].$set['envio.codigoError'], undefined);
+  assert.deepEqual(actualizaciones[0].$unset, { 'envio.codigoError': '' });
+
+  const cuerpo = await respuesta.json();
+  assert.equal(cuerpo.envio.enviado, true);
+  assert.equal(cuerpo.envio.codigoError, undefined);
+  assert.ok(cuerpo.envio.ultimoIntentoEn);
+  sinEnlaceNiToken(cuerpo);
+});
+
+test('los fallos de id o de estado no se registran como errores de envio', async () => {
+  for (const [id, estado, esperado] of [
+    ['no-es-un-id', 'diagnosticado', 400],
+    [String(new mongoose.Types.ObjectId()), 'autorizado', 409],
+    [String(new mongoose.Types.ObjectId()), 'cotizacion_enviada', 409],
+  ]) {
+    const ticket = ticketBase({ _id: id, estado, envio: { enviado: true, intentos: 1 } });
+    const actualizaciones = [];
+    const app = appCon({
+      ticket,
+      actualizaciones,
+      mailer: { enviarCotizacion: async () => ({ id: 'no-debe-usarse' }) },
+    });
+
+    const { resultado: respuesta, lineas } = await capturarErrores(() => enviar(app, id));
+    assert.equal(respuesta.status, esperado, `${estado}: ${esperado}`);
+    assert.equal(actualizaciones.length, 0, `${estado} no registra intento`);
+    assert.deepEqual(lineas, [], `${estado} no loguea codigo de envio`);
+  }
+});
+
+test('GET lista y detalle solo exponen los cuatro campos de envio', async () => {
+  const ticket = ticketBase({
+    tokenHash: 'a'.repeat(64),
+    tokenVenceEn: new Date('2026-11-01T00:00:00.000Z'),
+    envio: {
+      enviado: false,
+      intentos: 3,
+      codigoError: 'proveedor_500',
+      ultimoIntentoEn: new Date('2026-10-26T00:00:00.000Z'),
+      ultimoError: 'texto viejo',
+      destinatario: 'ana@example.com',
+      cuerpo: 'detalle interno',
+    },
+  });
+  const app = appCon({ ticket, mailer: { enviarCotizacion: async () => ({}) } });
+
+  await conServidor(app, async (base) => {
+    for (const ruta of ['/api/tickets', `/api/tickets/${ticket._id}`]) {
+      const respuesta = await fetch(`${base}${ruta}`);
+      assert.equal(respuesta.status, 200);
+      const cuerpo = await respuesta.json();
+      const item = cuerpo.tickets ? cuerpo.tickets[0] : cuerpo;
+      assert.deepEqual(
+        Object.keys(item.envio).sort(),
+        ['codigoError', 'enviado', 'intentos', 'ultimoIntentoEn']
+      );
+      assert.equal(JSON.stringify(item.envio).includes('ana@example.com'), false);
+      assert.equal(JSON.stringify(item.envio).includes('detalle interno'), false);
+      assert.equal(JSON.stringify(cuerpo).includes('tokenHash'), false);
+      sinEnlaceNiToken(cuerpo);
+    }
+  });
 });
