@@ -14,10 +14,12 @@ import Perfil from './components/Perfil.jsx';
 import { useAuth } from './context/AuthContext.jsx';
 import Paso2Sintomas from './components/Paso2Sintomas.jsx';
 import Resultados from './components/Resultados.jsx';
+import Tickets from './components/Tickets.jsx';
 import { useCatalogosIngeniero } from './hooks/useCatalogosIngeniero.js';
 import { diagnosticar, guardarDiagnostico, obtenerTipoCambio } from './lib/api.js';
 import { mapearProlog } from './lib/diagnostico.js';
 import { etiquetaRol } from './lib/roles.js';
+import { puedeUsarTickets } from './lib/tickets.js';
 
 // El menu, el encabezado de la pagina y el cuerpo se leen de la misma lista. Con
 // las secciones escritas en tres sitios, agregar una era cambiar tres ramas y
@@ -84,6 +86,12 @@ const SECCIONES = [
     subtitulo: 'Actualiza tus datos de acceso y tu contraseña.',
     oculto: true,
   },
+  {
+    id: 'tickets',
+    etiqueta: 'Tickets',
+    titulo: 'Tickets',
+    subtitulo: 'Tickets de reparación y cotizaciones.',
+  },
 ];
 
 // Dos letras para el circulo de la barra superior: las iniciales del nombre, o
@@ -135,13 +143,17 @@ export default function App() {
   const seleccionados = useMemo(() => new Set(sintomasConfirmados), [sintomasConfirmados]);
   const [resultados, setResultados] = useState(null);
   const [vista, setVista] = useState('cuestionario');
+  const [ticketAbiertoId, setTicketAbiertoId] = useState(null);
   const peticionRef = useRef(0);
   const { catalogos, status } = useCatalogosIngeniero();
   const { user, loading, logout } = useAuth();
   const esAdmin = user?.role === 'administrador_mecanico';
   const seccionesVisibles = useMemo(
-    () => SECCIONES.filter((s) => !s.soloAdmin || esAdmin),
-    [esAdmin]
+    () => SECCIONES.filter((s) => {
+      if (s.id === 'tickets') return puedeUsarTickets(user);
+      return !s.soloAdmin || esAdmin;
+    }),
+    [esAdmin, user]
   );
   // El menu lateral no lista las ocultas (`Mi perfil`): su entrada es el badge.
   const seccionesMenu = useMemo(
@@ -174,6 +186,16 @@ export default function App() {
   useEffect(() => {
     if (!mostrarBusqueda) setSearchQuery('');
   }, [mostrarBusqueda]);
+
+  // Si el usuario navega a Tickets y pierde el permiso (admin quita la feature),
+  // vuelve automáticamente al diagnóstico para evitar quedarse en una sección
+  // a la que no tiene acceso.
+  useEffect(() => {
+    if (section === 'tickets' && !puedeUsarTickets(user)) {
+      setSection('diagnostico');
+      setTicketAbiertoId(null);
+    }
+  }, [section, user, puedeUsarTickets]);
 
   // El titulo de la pestaña sigue a la seccion visible. Se reusa `seccion.titulo`
   // en vez de una segunda lista de nombres: el menu, el encabezado y la pestaña
@@ -271,6 +293,8 @@ export default function App() {
       onVolver={volverAlCuestionario}
       onCambiarVehiculo={cambiarVehiculo}
       onGuardar={guardarResultado}
+      user={user}
+      onTicketCreado={(id) => { setTicketAbiertoId(id); setSection('tickets'); }}
     />
   ) : (
     <Paso2Sintomas
@@ -395,7 +419,8 @@ export default function App() {
                 onLimpiarBusqueda={() => setSearchQuery('')}
               />
             )}
-            {section === 'historial' && <Historial />}
+            {section === 'historial' && <Historial user={user} onAbrirTicket={(id) => { setTicketAbiertoId(id); setSection('tickets'); }} />}
+            {section === 'tickets' && puedeUsarTickets(user) && <Tickets ticketAbiertoId={ticketAbiertoId} onAbrir={setTicketAbiertoId} />}
             {section === 'agregar-falla' && esAdmin && <AgregarFalla />}
             {section === 'administrar-fallas' && esAdmin && <AdministrarFallas />}
             {section === 'administrar-usuarios' && esAdmin && <AdministrarUsuarios />}

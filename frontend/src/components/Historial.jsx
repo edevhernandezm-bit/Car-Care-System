@@ -1,5 +1,8 @@
 import EstadoVacio from './EstadoVacio.jsx';
+import { useQuery } from '@tanstack/react-query';
 import { useHistorial } from '../hooks/useHistorial.js';
+import { obtenerAtencion } from '../lib/api.js';
+import { puedeUsarTickets, etiquetaEstado } from '../lib/tickets.js';
 import { certezaPorcentaje, etiquetaAnio, etiquetaTransmision } from '../lib/diagnostico.js';
 
 // El nombre de la falla ya viene guardado en el documento; si por lo que sea no
@@ -21,7 +24,7 @@ function fechaLegible(iso) {
   });
 }
 
-function TarjetaDiagnostico({ doc }) {
+function TarjetaDiagnostico({ doc, tickets = [], onAbrirTicket }) {
   const { vehiculo = {}, fallas = [], sintomas = [], observaciones = '' } = doc;
   return (
     <article className="info-card">
@@ -36,6 +39,10 @@ function TarjetaDiagnostico({ doc }) {
         </div>
       </div>
       <div className="card-body">
+        {tickets.map((ticket) => <p className="text-danger" key={ticket.ticketId}>
+          Requiere atención: {etiquetaEstado(ticket.estado)}{' '}
+          <button type="button" className="secondary-btn" onClick={() => onAbrirTicket(ticket.ticketId)}>Ver ticket</button>
+        </p>)}
         <p className="historial-meta">
           <span>{etiquetaTransmision(vehiculo.transmision)}</span>
           <span>
@@ -73,8 +80,9 @@ function TarjetaDiagnostico({ doc }) {
   );
 }
 
-export default function Historial() {
+export default function Historial({ user, onAbrirTicket }) {
   const { historial, status, error } = useHistorial();
+  const atencion = useQuery({ queryKey: ['tickets', 'atencion'], queryFn: ({ signal }) => obtenerAtencion(signal), enabled: puedeUsarTickets(user), staleTime: 0, refetchOnMount: 'always' });
 
   if (status === 'error') {
     return (
@@ -113,8 +121,9 @@ export default function Historial() {
 
   return (
     <div className="historial-lista">
+      {puedeUsarTickets(user) && atencion.isError && <p role="alert">No se pudo consultar la atención de tickets.</p>}
       {historial.map((doc) => (
-        <TarjetaDiagnostico key={doc._id} doc={doc} />
+        <TarjetaDiagnostico key={doc._id} doc={doc} tickets={puedeUsarTickets(user) ? (atencion.data?.tickets || []).filter((t) => String(t.diagnosticoId) === String(doc._id)) : []} onAbrirTicket={onAbrirTicket} />
       ))}
     </div>
   );

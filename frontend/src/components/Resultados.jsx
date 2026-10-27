@@ -11,6 +11,8 @@ import {
   tasaEsEstimada,
   urgenciaClase,
 } from '../lib/diagnostico.js';
+import { puedeUsarTickets } from '../lib/tickets.js';
+import CrearTicket from './CrearTicket.jsx';
 
 // Certeza del diagnostico. El motor ya calcula un factor MYCIN y define sus
 // cortes, pero no lo exportaba al JSON. La barra se marca aria-hidden y el
@@ -134,7 +136,7 @@ function SkeletonResultados() {
   );
 }
 
-export default function Resultados({ resultados, onVolver, onCambiarVehiculo, onGuardar }) {
+export default function Resultados({ resultados, onVolver, onCambiarVehiculo, onGuardar, user, onTicketCreado }) {
   // El guardado ya no es automatico (2.4): el mecanico escribe sus observaciones
   // y pulsa el boton. El estado vive aqui, que es quien las captura.
   const [observaciones, setObservaciones] = useState('');
@@ -237,6 +239,9 @@ export default function Resultados({ resultados, onVolver, onCambiarVehiculo, on
             </div>
           )}
 
+          {resultados.guardado?._id && puedeUsarTickets(user) && (
+            <CrearTicket diagnosticoId={resultados.guardado._id} fallas={fallas} onCreado={onTicketCreado} />
+          )}
           {!error && !cargando && (
             <div className="card-section">
               <h4>Observaciones</h4>
