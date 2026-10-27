@@ -177,3 +177,28 @@ export function cambiarEstadoTicket({ ticketId, a }) {
 export function obtenerAtencion(signal) {
   return apiFetch('/api/tickets/atencion', { signal });
 }
+
+async function peticionPublica(ruta, cuerpo, signal) {
+  try {
+    const respuesta = await fetch(ruta, {
+      method: 'POST', credentials: 'omit', signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cuerpo),
+    });
+    if (respuesta.status === 404) return { tipo: 'invalido' };
+    if (respuesta.status === 429) return { tipo: 'limite' };
+    if (respuesta.status === 422) return { tipo: 'datos' };
+    if (!respuesta.ok) return { tipo: 'red' };
+    return { tipo: 'ok', datos: await respuesta.json() };
+  } catch {
+    return { tipo: 'red' };
+  }
+}
+
+export function consultarCotizacionPublica(token, signal) {
+  return peticionPublica('/api/publico/cotizacion/consultar', { token }, signal);
+}
+
+export function decidirCotizacionPublica(cuerpo, signal) {
+  return peticionPublica('/api/publico/cotizacion/decidir', cuerpo, signal);
+}
