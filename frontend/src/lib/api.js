@@ -29,7 +29,7 @@ export async function apiFetch(ruta, options = {}) {
       // El servidor puede responder con texto plano o HTML; el status ya basta
       // para decidir que fallo, y el detalle solo mejora el mensaje.
     }
-    throw new Error(detalle || `Error ${res.status}`);
+    throw Object.assign(new Error(detalle || `Error ${res.status}`), { status: res.status });
   }
   if (res.status === 204) return null;
   return res.json();
@@ -146,4 +146,34 @@ export async function obtenerHistorial(signal) {
   const res = await fetch(API_DIAGNOSTICOS, { signal, credentials: 'same-origin' });
   if (!res.ok) throw new Error('No se pudo consultar el historial');
   return res.json();
+}
+
+// --- RUTAS DE TICKETS ---
+
+export function crearTicket(cuerpo) {
+  return apiFetch('/api/tickets', { method: 'POST', body: JSON.stringify(cuerpo) });
+}
+
+export function enviarTicket({ ticketId, precioFinalMXN }) {
+  return apiFetch(`/api/tickets/${encodeURIComponent(ticketId)}/enviar`, {
+    method: 'POST', body: JSON.stringify({ precioFinalMXN }),
+  });
+}
+
+export function listarTickets(offset = 0, signal) {
+  return apiFetch(`/api/tickets?offset=${offset}`, { signal });
+}
+
+export function obtenerTicket(id, signal) {
+  return apiFetch(`/api/tickets/${encodeURIComponent(id)}`, { signal });
+}
+
+export function cambiarEstadoTicket({ ticketId, a }) {
+  return apiFetch(`/api/tickets/${encodeURIComponent(ticketId)}/estado`, {
+    method: 'PATCH', body: JSON.stringify({ a }),
+  });
+}
+
+export function obtenerAtencion(signal) {
+  return apiFetch('/api/tickets/atencion', { signal });
 }
