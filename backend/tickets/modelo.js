@@ -14,6 +14,8 @@ const ESTADOS = [
 const CORREO_MAX = 254;
 const NOMBRE_MAX = 120;
 const TELEFONO_MAX = 30;
+const COMENTARIO_MAX = 500;
+const MOTIVOS_RECHAZO = ['precio_alto', 'no_deseo_reparar', 'dudo_del_diagnostico', 'otro'];
 
 // Solo codigos fijos: el detalle del proveedor nunca entra en el documento.
 const CODIGOS_ERROR = [
@@ -72,6 +74,17 @@ const historialSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Append-only: cada decision del cliente deja su propia entrada.
+const decisionSchema = new mongoose.Schema(
+  {
+    resultado: { type: String, enum: ['autorizado', 'rechazado'], required: true },
+    motivo: { type: String, enum: MOTIVOS_RECHAZO },
+    comentario: { type: String, maxlength: COMENTARIO_MAX },
+    en: { type: Date, required: true },
+  },
+  { _id: false }
+);
+
 const ticketSchema = new mongoose.Schema(
   {
     diagnosticoId: { type: mongoose.Schema.Types.ObjectId, ref: 'Diagnostico', required: true },
@@ -98,6 +111,7 @@ const ticketSchema = new mongoose.Schema(
     },
     estado: { type: String, enum: ESTADOS, required: true, default: 'diagnosticado' },
     historial: { type: [historialSchema], default: [] },
+    decisiones: { type: [decisionSchema], default: [] },
     // Solo se guarda el resultado del ultimo intento: nunca cuerpo ni destinatario.
     envio: {
       enviado: { type: Boolean, default: false },
@@ -148,6 +162,8 @@ module.exports = {
   codigoErrorValido,
   CODIGOS_ERROR,
   PROVEEDOR_RE,
+  COMENTARIO_MAX,
+  MOTIVOS_RECHAZO,
   CORREO_MAX,
   CORREO_RE,
   NOMBRE_MAX,

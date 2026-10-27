@@ -3,11 +3,15 @@ const rateLimit = require('express-rate-limit');
 
 const { buscarPorToken, hashToken, estaVencido } = require('./token');
 const { cambiarEstado, vencerExpirada } = require('./transiciones');
+const { COMENTARIO_MAX, MOTIVOS_RECHAZO } = require('./modelo');
 
 const ERROR_GENERICO = Object.freeze({ error: 'Enlace no válido o vencido' });
+const ERROR_DATOS = Object.freeze({ error: 'Datos no válidos' });
 const ERROR_INTERNO = Object.freeze({ error: 'Error interno' });
 const DECISIONES = ['autorizar', 'rechazar'];
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
+// C0 sin \n (permite salto de linea) y DEL.
+const CONTROL_RE = /[\u0000-\u0009\u000B-\u001F\u007F]/;
 
 function tokenValido(token) {
   return typeof token === 'string' && TOKEN_RE.test(token);
@@ -15,6 +19,22 @@ function tokenValido(token) {
 
 function decisionValida(decision) {
   return DECISIONES.includes(decision);
+}
+
+// Normaliza lo que acompana a un rechazo. Devuelve null si no cumple; si
+// cumple, solo las claves que de verdad vienen (sin undefined).
+function prepararRechazo({ motivo, comentario } = {}) {
+  if (motivo !== undefined && !MOTIVOS_RECHAZO.includes(motivo)) return null;
+  if (comentario !== undefined && typeof comentario !== 'string') return null;
+
+  const limpio =
+    typeof comentario === 'string' ? comentario.replace(/\r\n/g, '\n').trim() : '';
+  if (limpio.length > COMENTARIO_MAX || CONTROL_RE.test(limpio)) return null;
+
+  const salida = {};
+  if (motivo !== undefined) salida.motivo = motivo;
+  if (limpio) salida.comentario = limpio;
+  return salida;
 }
 
 function aplicarCabeceras(res) {
@@ -110,8 +130,13 @@ function crearRutasPublicas({
   });
 
   router.post('/cotizacion/decidir', async (req, res, next) => {
-    const { token, decision } = req.body || {};
+    const { token, decision, motivo, comentario } = req.body || {};
     if (!tokenValido(token) || !decisionValida(decision)) return responderGenerico(res);
+
+    // Validacion previa a la base: un rechazo mal formado no depende del token.
+    const esRechazo = decision === 'rechazar';
+    const rechazo = esRechazo ? prepararRechazo({ motivo, comentario }) : {};
+    if (!rechazo) return res.status(422).json(ERROR_DATOS);
 
     try {
       const ahora = new Date();
@@ -123,7 +148,10 @@ function crearRutasPublicas({
         return responderGenerico(res);
       }
 
-      const estado = decision === 'autorizar' ? 'autorizado' : 'rechazado';
+      const estado = esRechazo ? 'rechazado' : 'autorizado';
+      const decisionGuardada = { resultado: estado, en: ahora };
+      if (esRechazo) Object.assign(decisionGuardada, rechazo);
+
       const actualizado = await cambiarEstado(Ticket, {
         id: ticket._id,
         de: 'cotizacion_enviada',
@@ -132,6 +160,7 @@ function crearRutasPublicas({
         ahora,
         tokenHash: hashToken(token),
         exigirToken: true,
+        agregar: { decisiones: decisionGuardada },
       });
 
       if (!actualizado) {
@@ -170,10 +199,12 @@ function manejarErrorPublico(error, _req, res, _next) {
 
 module.exports = {
   ERROR_GENERICO,
+  ERROR_DATOS,
   crearRutasPublicas,
   montarTicketsPublico,
   manejarErrorPublico,
   tokenValido,
   decisionValida,
+  prepararRechazo,
   vistaTicketPublico,
 };

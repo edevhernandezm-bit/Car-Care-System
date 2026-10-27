@@ -3502,13 +3502,18 @@ async function crearTicketEnviado(cookieAdmin, cookieDatos, correo) {
   });
   assert.equal(enviado.status, 200, 'el correo fake debe aceptar el envio publico');
 
+  const token = await tokenDelUltimoCorreo(correo);
+  return { ticket, token };
+}
+
+async function tokenDelUltimoCorreo(correo) {
   const guardado = await ultimoCorreo(correo);
   assert.ok(guardado, 'el fake debe guardar el correo publico');
   const enlace = /href="([^"]+)"/.exec(guardado.html)?.[1];
   assert.ok(enlace, 'el correo publico debe traer el enlace');
   const token = new URL(enlace).hash.slice(1);
   assert.equal(token.length, 43, 'el token del enlace debe tener 43 caracteres');
-  return { ticket, token };
+  return token;
 }
 
 async function actualizarTicket(id, update) {
@@ -3964,4 +3969,362 @@ test('48 | Público: el interruptor apagado deja /api/publico en el 404 global',
   } finally {
     if (proc.pid) matarArbol(proc.pid);
   }
+});
+
+test('49 | Público: rechazo con motivo y comentario queda guardado', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const { ticket, token } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('motivo')
+  );
+
+  const respuesta = await postPublico('decidir', {
+    token,
+    decision: 'rechazar',
+    motivo: 'precio_alto',
+    comentario: '  Muy caro, gracias.  ',
+  });
+  assert.equal(respuesta.status, 200);
+  assert.deepEqual(JSON.parse(respuesta.texto), { estado: 'rechazado' });
+  assert.equal(respuesta.headers.get('cache-control'), 'no-store');
+  assert.equal(respuesta.headers.get('referrer-policy'), 'no-referrer');
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.estado, 'rechazado');
+  assert.equal(doc.decisiones.length, 1, 'una sola decision');
+  const [decision] = doc.decisiones;
+  assert.equal(decision.resultado, 'rechazado');
+  assert.equal(decision.motivo, 'precio_alto');
+  assert.equal(decision.comentario, 'Muy caro, gracias.', 'se guarda con trim');
+  assert.ok(decision.en instanceof Date);
+  assert.equal(
+    doc.historial.filter(
+      (paso) => paso.de === 'cotizacion_enviada' && paso.a === 'rechazado'
+    ).length,
+    1
+  );
+});
+
+test('50 | Público: rechazo sin motivo ni comentario es valido', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const { ticket, token } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('sin-extras')
+  );
+
+  const respuesta = await postPublico('decidir', { token, decision: 'rechazar' });
+  assert.equal(respuesta.status, 200);
+  assert.deepEqual(JSON.parse(respuesta.texto), { estado: 'rechazado' });
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.decisiones.length, 1);
+  assert.deepEqual(Object.keys(doc.decisiones[0]).sort(), ['en', 'resultado']);
+  assert.equal(doc.decisiones[0].resultado, 'rechazado');
+});
+
+test('51 | Público: diez rechazos simultaneos guardan solo la decision ganadora', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const { ticket, token } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('carrera-rechazos')
+  );
+
+  const comentarios = Array.from({ length: 10 }, (_, i) => `rechazo-${i}`);
+  const respuestas = await Promise.all(
+    comentarios.map((comentario) =>
+      postPublico('decidir', {
+        token,
+        decision: 'rechazar',
+        motivo: 'otro',
+        comentario,
+      })
+    )
+  );
+
+  const ganadoras = respuestas
+    .map((respuesta, i) => ({ respuesta, i }))
+    .filter(({ respuesta }) => respuesta.status === 200);
+  assert.equal(ganadoras.length, 1, 'exactamente un rechazo debe ganar');
+  for (const { respuesta } of respuestas
+    .map((respuesta, i) => ({ respuesta, i }))
+    .filter(({ respuesta }) => respuesta.status !== 200)) {
+    assert.equal(respuesta.status, 404);
+    assert.deepEqual(JSON.parse(respuesta.texto), ERROR_PUBLICO);
+  }
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.estado, 'rechazado');
+  assert.equal(doc.decisiones.length, 1, 'solo la ganadora deja decision');
+  assert.equal(doc.decisiones[0].comentario, comentarios[ganadoras[0].i]);
+  assert.equal(
+    doc.historial.filter(
+      (paso) => paso.de === 'cotizacion_enviada' && paso.a === 'rechazado'
+    ).length,
+    1,
+    'solo la ganadora deja historial'
+  );
+});
+
+test('52 | Público: comentario de 501 y motivo invalido dan 422 sin cambiar el ticket', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const { ticket, token } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('422')
+  );
+
+  const casos = [
+    { comentario: 'a'.repeat(501) },
+    { motivo: 'prefiero_otro_taller' },
+  ];
+  for (const extra of casos) {
+    const respuesta = await postPublico('decidir', {
+      token,
+      decision: 'rechazar',
+      ...extra,
+    });
+    assert.equal(respuesta.status, 422);
+    assert.deepEqual(JSON.parse(respuesta.texto), { error: 'Datos no válidos' });
+    assert.equal(respuesta.headers.get('cache-control'), 'no-store');
+    assert.equal(respuesta.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(respuesta.headers.get('set-cookie'), null);
+  }
+
+  // El 422 no depende de que el token exista: se valida antes de la base.
+  const sinBase = await postPublico('decidir', {
+    token: 'A'.repeat(43),
+    decision: 'rechazar',
+    comentario: 'a'.repeat(501),
+  });
+  assert.equal(sinBase.status, 422);
+  assert.deepEqual(JSON.parse(sinBase.texto), { error: 'Datos no válidos' });
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.estado, 'cotizacion_enviada');
+  assert.equal(doc.decisiones.length, 0);
+  assert.ok(doc.tokenHash, 'el token no se toca');
+  const consulta = await postPublico('consultar', { token });
+  assert.equal(consulta.status, 200, 'el enlace sigue vigente');
+});
+
+test('53 | Público: autorizar ignora motivo y comentario', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const { ticket, token } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('autorizar-extras')
+  );
+
+  const respuesta = await postPublico('decidir', {
+    token,
+    decision: 'autorizar',
+    motivo: 'precio_alto',
+    comentario: 'no se debe guardar',
+  });
+  assert.equal(respuesta.status, 200);
+  assert.deepEqual(JSON.parse(respuesta.texto), { estado: 'autorizado' });
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.decisiones.length, 1);
+  assert.deepEqual(Object.keys(doc.decisiones[0]).sort(), ['en', 'resultado']);
+  assert.equal(doc.decisiones[0].resultado, 'autorizado');
+});
+
+test('54 | Público: el comentario con HTML se guarda tal cual', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const { ticket, token } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('html')
+  );
+
+  const html = '<img src=x onerror="alert(1)"> & <script>alert(2)</script>';
+  const respuesta = await postPublico('decidir', {
+    token,
+    decision: 'rechazar',
+    motivo: 'otro',
+    comentario: `  ${html}  `,
+  });
+  assert.equal(respuesta.status, 200);
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.decisiones[0].comentario, html);
+});
+
+test('55 | Tickets: reenvio desde rechazado regenera token y conserva decisiones', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const correo = correoPublico('reenvio');
+  const { ticket, token } = await crearTicketEnviado(cookieAdmin, cookieDatos, correo);
+
+  const rechazo = await postPublico('decidir', {
+    token,
+    decision: 'rechazar',
+    motivo: 'precio_alto',
+    comentario: 'revisar precio',
+  });
+  assert.equal(rechazo.status, 200);
+
+  const antes = await ticketEnMongo(ticket._id);
+  assert.equal(antes.decisiones.length, 1);
+  const enAntes = antes.decisiones[0].en.toISOString();
+
+  const viejo = await postPublico('consultar', { token });
+  assert.equal(viejo.status, 404, 'el enlace anterior deja de servir');
+
+  // Un envio fallido deja enviado=false: el intento nuevo aun no ha salido.
+  await actualizarTicket(ticket._id, {
+    $set: { 'cliente.correo': `falla-${Date.now()}@falla.example` },
+  });
+  const fallido = await api(`/api/tickets/${ticket._id}/enviar`, {
+    method: 'POST',
+    cookie: cookieAdmin,
+  });
+  assert.equal(fallido.status, 502);
+
+  const trasFallo = await ticketEnMongo(ticket._id);
+  assert.equal(trasFallo.estado, 'cotizacion_enviada');
+  assert.equal(trasFallo.envio.enviado, false, 'el envio anterior se reinicia');
+  assert.equal(trasFallo.decisiones.length, 1, 'las decisiones siguen intactas');
+  assert.equal(trasFallo.decisiones[0].comentario, 'revisar precio');
+  assert.equal(trasFallo.decisiones[0].en.toISOString(), enAntes);
+
+  await actualizarTicket(ticket._id, { $set: { 'cliente.correo': correo } });
+  const reenviado = await api(`/api/tickets/${ticket._id}/enviar`, {
+    method: 'POST',
+    cookie: cookieAdmin,
+  });
+  assert.equal(reenviado.status, 200);
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.estado, 'cotizacion_enviada');
+  assert.equal(doc.envio.enviado, true);
+  assert.equal(doc.decisiones.length, 1);
+  assert.equal(doc.decisiones[0].comentario, 'revisar precio');
+  assert.equal(doc.decisiones[0].en.toISOString(), enAntes);
+
+  const horas = (doc.tokenVenceEn - Date.now()) / 3600000;
+  assert.ok(horas > 71 && horas <= 72.1, `el token nuevo vence en 72 h (${horas})`);
+
+  const tokenNuevo = await tokenDelUltimoCorreo(correo);
+  assert.notEqual(tokenNuevo, token, 'el token debe ser nuevo');
+  const consultaNueva = await postPublico('consultar', { token: tokenNuevo });
+  assert.equal(consultaNueva.status, 200);
+  const consultaVieja = await postPublico('consultar', { token });
+  assert.equal(consultaVieja.status, 404);
+});
+
+test('56 | Tickets: rechazado pasa a cancelado por PATCH y no vuelve por PATCH', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const { ticket, token } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correoPublico('patch-rechazado')
+  );
+  await postPublico('decidir', {
+    token,
+    decision: 'rechazar',
+    motivo: 'no_deseo_reparar',
+  });
+
+  const volver = await api(`/api/tickets/${ticket._id}/estado`, {
+    method: 'PATCH',
+    cookie: cookieAdmin,
+    body: { a: 'cotizacion_enviada' },
+  });
+  assert.equal(volver.status, 400, 'PATCH no reabre la cotizacion');
+  assert.equal((await ticketEnMongo(ticket._id)).estado, 'rechazado');
+
+  const cancelar = await api(`/api/tickets/${ticket._id}/estado`, {
+    method: 'PATCH',
+    cookie: cookieAdmin,
+    body: { a: 'cancelado' },
+  });
+  assert.equal(cancelar.status, 200);
+  assert.equal(cancelar.body.estado, 'cancelado');
+
+  const doc = await ticketEnMongo(ticket._id);
+  assert.equal(doc.estado, 'cancelado');
+  assert.equal(doc.decisiones.length, 1);
+  assert.equal(
+    doc.historial.filter((paso) => paso.de === 'rechazado' && paso.a === 'cancelado').length,
+    1
+  );
+});
+
+test('57 | Público: la consulta no expone decisiones ni comentario', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const correo = correoPublico('consulta-privada');
+  const { ticket, token: tokenViejo } = await crearTicketEnviado(
+    cookieAdmin,
+    cookieDatos,
+    correo
+  );
+
+  const secreto = 'comentario privado 57';
+  const rechazo = await postPublico('decidir', {
+    token: tokenViejo,
+    decision: 'rechazar',
+    motivo: 'precio_alto',
+    comentario: secreto,
+  });
+  assert.equal(rechazo.status, 200);
+
+  const reenvio = await api(`/api/tickets/${ticket._id}/enviar`, {
+    method: 'POST',
+    cookie: cookieAdmin,
+  });
+  assert.equal(reenvio.status, 200, 'reenviar desde rechazado es valido');
+
+  const tokenNuevo = await tokenDelUltimoCorreo(correo);
+  const consulta = await postPublico('consultar', { token: tokenNuevo });
+  assert.equal(consulta.status, 200);
+  for (const prohibido of ['decisiones', 'comentario', secreto]) {
+    assert.equal(consulta.texto.includes(prohibido), false, `no debe salir ${prohibido}`);
+  }
+});
+
+test('58 | Tickets: la lista no expone el comentario de la decision', async () => {
+  const cookieAdmin = await sesionGateway();
+  const cookieDatos = await sesionEstudianteTickets();
+  const correo = correoPublico('lista-decision');
+  const { ticket, token } = await crearTicketEnviado(cookieAdmin, cookieDatos, correo);
+
+  const secreto = 'comentario-privado-lista-58';
+  const rechazo = await postPublico('decidir', {
+    token,
+    decision: 'rechazar',
+    motivo: 'no_deseo_reparar',
+    comentario: secreto,
+  });
+  assert.equal(rechazo.status, 200);
+
+  const lista = await api('/api/tickets?limit=200', { cookie: cookieAdmin });
+  assert.equal(lista.status, 200);
+  assert.equal(lista.texto.includes('comentario'), false, 'la lista no trae el campo');
+  assert.equal(lista.texto.includes(secreto), false, 'la lista no trae el texto');
+
+  const item = lista.body.tickets.find((fila) => fila._id === ticket._id);
+  assert.ok(item, 'el ticket rechazado aparece en la lista');
+  assert.deepEqual(item.ultimaDecision, {
+    resultado: 'rechazado',
+    motivo: 'no_deseo_reparar',
+  });
+  assert.equal('decisiones' in item, false);
+
+  const detalle = await api(`/api/tickets/${ticket._id}`, { cookie: cookieAdmin });
+  assert.equal(detalle.status, 200);
+  assert.equal(detalle.body.decisiones.length, 1);
+  assert.equal(detalle.body.decisiones[0].comentario, secreto);
 });

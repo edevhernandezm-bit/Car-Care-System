@@ -3,10 +3,12 @@ const assert = require('node:assert/strict');
 
 const {
   ERROR_GENERICO,
+  ERROR_DATOS,
   montarTicketsPublico,
   manejarErrorPublico,
   tokenValido,
   decisionValida,
+  prepararRechazo,
   vistaTicketPublico,
 } = require('./publico');
 
@@ -25,6 +27,27 @@ test('la decision publica solo acepta autorizar o rechazar', () => {
   assert.equal(decisionValida('aprobar'), false);
   assert.equal(decisionValida('AUTORIZAR'), false);
   assert.equal(decisionValida(undefined), false);
+});
+
+test('normaliza el rechazo: CRLF a LF, trim y HTML intacto', () => {
+  assert.deepEqual(prepararRechazo({ motivo: 'otro', comentario: '  <b>Hola</b>\r\nmundo  ' }), {
+    motivo: 'otro',
+    comentario: '<b>Hola</b>\nmundo',
+  });
+  assert.deepEqual(prepararRechazo({}), {});
+  assert.deepEqual(prepararRechazo({ comentario: '   \r\n ' }), {});
+  assert.deepEqual(prepararRechazo({ comentario: 'a'.repeat(500) }), {
+    comentario: 'a'.repeat(500),
+  });
+  assert.deepEqual(ERROR_DATOS, { error: 'Datos no válidos' });
+});
+
+test('rechaza motivo, comentario y controles invalidos', () => {
+  assert.equal(prepararRechazo({ motivo: 'prefiero_otro_taller' }), null);
+  assert.equal(prepararRechazo({ comentario: 123 }), null);
+  assert.equal(prepararRechazo({ comentario: 'a'.repeat(501) }), null);
+  assert.equal(prepararRechazo({ comentario: 'linea\tcon\ttab' }), null);
+  assert.equal(prepararRechazo({ comentario: 'eco\u0007' }), null);
 });
 
 test('la vista publica solo expone la lista blanca y recorta el nombre', () => {
@@ -58,6 +81,7 @@ test('la vista publica solo expone la lista blanca y recorta el nombre', () => {
       telefono: '5555555555',
     },
     historial: [{ de: 'diagnosticado', a: 'cotizacion_enviada' }],
+    decisiones: [{ resultado: 'rechazado', motivo: 'otro', comentario: 'no debe salir' }],
   };
 
   assert.deepEqual(vistaTicketPublico(ticket), {
@@ -75,7 +99,16 @@ test('la vista publica solo expone la lista blanca y recorta el nombre', () => {
   });
 
   const serializado = JSON.stringify(vistaTicketPublico(ticket));
-  for (const prohibido of ['ana@example.com', '5555555555', 'id-interno', 'hash-secreto', 'manual']) {
+  for (const prohibido of [
+    'ana@example.com',
+    '5555555555',
+    'id-interno',
+    'hash-secreto',
+    'manual',
+    'decisiones',
+    'comentario',
+    'no debe salir',
+  ]) {
     assert.equal(serializado.includes(prohibido), false, `no debe salir ${prohibido}`);
   }
 });

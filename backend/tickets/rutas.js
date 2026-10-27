@@ -32,6 +32,20 @@ function sinToken(documento) {
   return copia;
 }
 
+// La lista solo muestra el resultado de la ultima decision y su motivo: el
+// comentario se queda en el detalle.
+function paraLista(ticket) {
+  const copia = sinToken(ticket);
+  delete copia.decisiones;
+  const lista = Array.isArray(ticket.decisiones) ? ticket.decisiones : [];
+  const ultima = lista[lista.length - 1];
+  if (ultima) {
+    copia.ultimaDecision = { resultado: ultima.resultado };
+    if (ultima.motivo !== undefined) copia.ultimaDecision.motivo = ultima.motivo;
+  }
+  return copia;
+}
+
 function limite(valor) {
   const n = Number.parseInt(String(valor ?? ''), 10);
   return Number.isFinite(n) && n > 0 ? Math.min(n, LIMITE_MAXIMO) : LIMITE_POR_DEFECTO;
@@ -135,7 +149,7 @@ function crearRutasTickets({
           .lean(),
         Ticket.countDocuments({}),
       ]);
-      res.json({ tickets: tickets.map(sinToken), total, limit: tamano, offset: salto });
+      res.json({ tickets: tickets.map(paraLista), total, limit: tamano, offset: salto });
     } catch (error) {
       next(error);
     }
@@ -265,17 +279,25 @@ function crearRutasTickets({
 
       let actualizado;
       let token;
-      if (ticket.estado === 'diagnosticado' || ticket.estado === 'vencido') {
+      if (
+        ticket.estado === 'diagnosticado' ||
+        ticket.estado === 'vencido' ||
+        ticket.estado === 'rechazado'
+      ) {
         token = generarToken();
+        const establecer = {
+          tokenHash: hashToken(token),
+          tokenVenceEn: calcularVencimiento(),
+        };
+        // Un rechazo se reabre como un intento nuevo: el correo anterior no
+        // cuenta como enviado hasta que este salga.
+        if (ticket.estado === 'rechazado') establecer['envio.enviado'] = false;
         actualizado = await cambiarEstado(Ticket, {
           id,
           de: ticket.estado,
           a: 'cotizacion_enviada',
           por: req.session.userId,
-          establecer: {
-            tokenHash: hashToken(token),
-            tokenVenceEn: calcularVencimiento(),
-          },
+          establecer,
         });
       } else if (ticket.estado === 'cotizacion_enviada' && !ticket.envio?.enviado) {
         token = generarToken();

@@ -88,7 +88,7 @@ function consulta(resultado) {
   return q;
 }
 
-function appCon({ ticket, mailer, resultado, actualizaciones = [] }) {
+function appCon({ ticket, mailer, resultado, actualizaciones = [], transiciones = [] }) {
   const final = resultado === undefined ? ticket : resultado;
   // La primera lectura es el ticket a enviar; las siguientes, el documento ya
   // actualizado que devuelve la ruta.
@@ -97,7 +97,8 @@ function appCon({ ticket, mailer, resultado, actualizaciones = [] }) {
     findById: () => consulta(++lecturas === 1 ? ticket : final),
     find: () => consulta(Array.isArray(final) ? final : [final]),
     countDocuments: async () => (Array.isArray(final) ? final.length : 1),
-    async findOneAndUpdate() {
+    async findOneAndUpdate(_filtro, update) {
+      transiciones.push(update);
       return { ...ticket, estado: 'cotizacion_enviada' };
     },
     async updateOne(_filtro, update) {
@@ -318,4 +319,71 @@ test('GET lista y detalle solo exponen los cuatro campos de envio', async () => 
       sinEnlaceNiToken(cuerpo);
     }
   });
+});
+
+test('la lista muestra ultimaDecision sin comentario y el detalle conserva decisiones', async () => {
+  const decision = {
+    resultado: 'rechazado',
+    motivo: 'precio_alto',
+    comentario: '<b>comentario secreto</b>',
+    en: new Date('2026-10-26T00:00:00.000Z'),
+  };
+  const ticket = ticketBase({ estado: 'rechazado', decisiones: [decision] });
+  const mailer = { enviarCotizacion: async () => ({}) };
+
+  const appLista = appCon({ ticket, resultado: [ticket], mailer });
+  await conServidor(appLista, async (base) => {
+    const respuesta = await fetch(`${base}/api/tickets`);
+    assert.equal(respuesta.status, 200);
+    const cuerpo = await respuesta.json();
+    const item = cuerpo.tickets[0];
+    assert.deepEqual(item.ultimaDecision, { resultado: 'rechazado', motivo: 'precio_alto' });
+    assert.equal('decisiones' in item, false, 'la lista no entrega el arreglo completo');
+    assert.equal(JSON.stringify(item).includes('comentario'), false);
+    assert.equal(JSON.stringify(item).includes('comentario secreto'), false);
+  });
+
+  const appDetalle = appCon({ ticket, mailer });
+  await conServidor(appDetalle, async (base) => {
+    const respuesta = await fetch(`${base}/api/tickets/${ticket._id}`);
+    assert.equal(respuesta.status, 200);
+    const cuerpo = await respuesta.json();
+    assert.equal(cuerpo.decisiones.length, 1);
+    assert.equal(cuerpo.decisiones[0].comentario, '<b>comentario secreto</b>');
+    assert.equal(cuerpo.decisiones[0].motivo, 'precio_alto');
+  });
+});
+
+test('reenviar desde rechazado reinicia el envio y conserva las decisiones', async () => {
+  const ticket = ticketBase({
+    estado: 'rechazado',
+    envio: { enviado: true, intentos: 1 },
+    decisiones: [
+      { resultado: 'rechazado', motivo: 'otro', comentario: 'sin cambios', en: new Date() },
+    ],
+  });
+  const transiciones = [];
+  const final = {
+    ...ticket,
+    estado: 'cotizacion_enviada',
+    envio: { enviado: true, intentos: 2 },
+  };
+  const app = appCon({
+    ticket,
+    resultado: final,
+    transiciones,
+    mailer: { enviarCotizacion: async () => ({ id: 'correo-1' }) },
+  });
+
+  const respuesta = await enviar(app, ticket._id);
+  assert.equal(respuesta.status, 200);
+  assert.equal(transiciones.length, 1);
+  const update = transiciones[0];
+  assert.equal(update.$set.estado, 'cotizacion_enviada');
+  assert.equal(update.$set['envio.enviado'], false, 'el envio anterior se reinicia');
+  assert.equal(typeof update.$set.tokenHash, 'string');
+  assert.ok(update.$set.tokenVenceEn instanceof Date);
+  assert.equal(update.$set.decisiones, undefined, 'las decisiones no se reescriben');
+  assert.equal(update.$push.historial.de, 'rechazado');
+  assert.equal(update.$push.decisiones, undefined);
 });

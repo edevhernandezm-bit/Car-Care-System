@@ -5,7 +5,7 @@ const TRANSICIONES = Object.freeze({
   diagnosticado: ['cotizacion_enviada', 'cancelado'],
   cotizacion_enviada: ['autorizado', 'rechazado', 'vencido', 'cancelado'],
   autorizado: ['en_reparacion', 'cancelado'],
-  rechazado: [],
+  rechazado: ['cotizacion_enviada', 'cancelado'],
   vencido: ['cotizacion_enviada', 'cancelado'],
   en_reparacion: ['terminado', 'cancelado'],
   terminado: [],
@@ -31,7 +31,17 @@ function normalizarEstablecer(establecer) {
  */
 async function cambiarEstado(
   Ticket,
-  { id, de, a, por = null, ahora = new Date(), tokenHash, exigirToken = false, establecer = {} } = {}
+  {
+    id,
+    de,
+    a,
+    por = null,
+    ahora = new Date(),
+    tokenHash,
+    exigirToken = false,
+    establecer = {},
+    agregar = {},
+  } = {}
 ) {
   if (!puedeTransicionar(de, a)) {
     throw new Error(`Transicion no permitida: ${de} -> ${a}`);
@@ -65,7 +75,9 @@ async function cambiarEstado(
 
   const update = {
     $set: { estado: a, actualizadoEn: ahora, ...extra },
-    $push: { historial: { de, a, en: ahora, por } },
+    // Un solo $push: el historial y lo que agregue la transicion (decisiones)
+    // se escriben juntos o no se escribe nada.
+    $push: { historial: { de, a, en: ahora, por }, ...agregar },
   };
   if (saleDeCotizacion) update.$unset = { tokenHash: '' };
 

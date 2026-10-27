@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
 
-const { Ticket, esClaveDuplicada, CORREO_MAX, NOMBRE_MAX, TELEFONO_MAX } = require('./modelo');
+const { Ticket, esClaveDuplicada, CORREO_MAX, NOMBRE_MAX, TELEFONO_MAX, COMENTARIO_MAX } = require('./modelo');
 
 function ticketValido(extra = {}) {
   return new Ticket({
@@ -48,6 +48,41 @@ test('el estado inicial y el envio tienen valores seguros', () => {
   assert.equal(ticket.envio.intentos, 0);
   assert.equal(ticket.envio.codigoError, undefined);
   assert.equal(ticket.envio.ultimoIntentoEn, undefined);
+  assert.deepEqual(ticket.decisiones.toObject(), []);
+});
+
+test('decisiones solo acepta resultado, motivo y comentario validos', async () => {
+  const valida = ticketValido();
+  valida.decisiones.push({
+    resultado: 'rechazado',
+    motivo: 'precio_alto',
+    comentario: 'a'.repeat(COMENTARIO_MAX),
+    en: new Date(),
+  });
+  assert.equal(await errores(valida), null);
+
+  const sinExtras = ticketValido();
+  sinExtras.decisiones.push({ resultado: 'rechazado', en: new Date() });
+  assert.equal(await errores(sinExtras), null);
+
+  for (const decision of [
+    { resultado: 'otro', en: new Date() },
+    { resultado: 'rechazado', motivo: 'prefiero_otro_taller', en: new Date() },
+    {
+      resultado: 'rechazado',
+      comentario: 'a'.repeat(COMENTARIO_MAX + 1),
+      en: new Date(),
+    },
+  ]) {
+    const ticket = ticketValido();
+    ticket.decisiones.push(decision);
+    const fallos = await errores(ticket);
+    assert.ok(
+      fallos['decisiones.0.resultado'] ||
+        fallos['decisiones.0.motivo'] ||
+        fallos['decisiones.0.comentario']
+    );
+  }
 });
 
 test('acepta solo los codigos de error fijos y proveedor_<3 digitos>', async () => {

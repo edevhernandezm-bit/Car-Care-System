@@ -38,12 +38,19 @@ test('las transiciones clave estan permitidas', () => {
     ['autorizado', 'en_reparacion'],
     ['en_reparacion', 'terminado'],
     ['vencido', 'cotizacion_enviada'],
+    ['rechazado', 'cotizacion_enviada'],
+    ['rechazado', 'cancelado'],
   ];
   for (const [de, a] of permitidas) assert.equal(puedeTransicionar(de, a), true, `${de} -> ${a}`);
 });
 
+test('rechazado ya no es terminal: se reabre o se cancela', () => {
+  assert.equal(puedeTransicionar('rechazado', 'cotizacion_enviada'), true);
+  assert.equal(puedeTransicionar('rechazado', 'cancelado'), true);
+});
+
 test('los estados terminales no salen', () => {
-  for (const de of ['rechazado', 'terminado', 'cancelado']) {
+  for (const de of ['terminado', 'cancelado']) {
     for (const a of ESTADOS) assert.equal(puedeTransicionar(de, a), false, `${de} -> ${a}`);
   }
 });
@@ -78,6 +85,32 @@ test('cambiarEstado usa un solo filtro por id y estado', async () => {
   });
   assert.equal(update.$unset, undefined);
   assert.deepEqual(opciones, { new: true });
+});
+
+test('cambiarEstado agrega las decisiones en el mismo $push', async () => {
+  const Ticket = ticketFalso();
+  const ahora = new Date('2026-10-25T12:00:00.000Z');
+  const decision = { resultado: 'rechazado', motivo: 'precio_alto', en: ahora };
+
+  await cambiarEstado(Ticket, {
+    id: 't1',
+    de: 'cotizacion_enviada',
+    a: 'rechazado',
+    ahora,
+    exigirToken: true,
+    tokenHash: 'hash-1',
+    agregar: { decisiones: decision },
+  });
+
+  const { update } = Ticket.llamadas[0];
+  assert.deepEqual(update.$push.historial, {
+    de: 'cotizacion_enviada',
+    a: 'rechazado',
+    en: ahora,
+    por: null,
+  });
+  assert.deepEqual(update.$push.decisiones, decision);
+  assert.equal(Ticket.llamadas.length, 1);
 });
 
 test('la decision del cliente exige token vigente', async () => {
