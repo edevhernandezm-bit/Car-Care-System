@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { crearTicket } from '../lib/api.js';
-import { cuerpoCrearTicket, validarCliente } from '../lib/tickets.js';
+import { cuerpoCrearTicket, erroresCliente } from '../lib/tickets.js';
 
 export default function CrearTicket({ diagnosticoId, fallas, onCreado }) {
   const [abierto, setAbierto] = useState(false);
@@ -16,8 +16,10 @@ export default function CrearTicket({ diagnosticoId, fallas, onCreado }) {
 
   async function guardar(e) {
     e.preventDefault();
-    if (!seleccion.length || !validarCliente(cliente)) {
-      setError('Selecciona al menos una falla y completa nombre y correo válidos.');
+    const errores = erroresCliente(cliente);
+    if (!seleccion.length) errores.unshift('Selecciona al menos una falla.');
+    if (errores.length) {
+      setError(errores.join(' '));
       return;
     }
     setError('');

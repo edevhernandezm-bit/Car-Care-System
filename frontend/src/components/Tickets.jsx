@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { cambiarEstadoTicket, enviarTicket, listarTickets, obtenerTicket } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
-import { envioPendiente, etiquetaAutoria, etiquetaAutorHistorial, etiquetaEstado, etiquetaMotivoRechazo, filtrarTickets, formatearMXN, requiereAtencion, textoCodigoEnvio, validarPrecioFinal } from '../lib/tickets.js';
+import { entradasConClave, envioPendiente, etiquetaAutoria, etiquetaAutorHistorial, etiquetaEstado, etiquetaMotivoRechazo, filtrarTickets, formatearMXN, requiereAtencion, textoCodigoEnvio, validarPrecioFinal } from '../lib/tickets.js';
 
 const fecha = (valor) => valor ? new Date(valor).toLocaleString('es-MX') : '';
 
@@ -35,7 +35,7 @@ function Detalle({ id, onCerrar, user }) {
     }
   }
   if (detalle.isPending) return <p role="status">Cargando detalle…</p>;
-  if (detalle.isError || !ticket) return <p role="alert">No se pudo cargar el detalle.</p>;
+  if (detalle.isError || !ticket) return <div><p role="alert">No se pudo cargar el detalle.</p><button type="button" className="secondary-btn" onClick={onCerrar}>Volver a la lista</button> <button type="button" className="secondary-btn" onClick={() => detalle.refetch()}>Reintentar</button></div>;
   const cot = ticket.cotizacion || {};
   const puedeEnviar = ['diagnosticado', 'rechazado', 'vencido'].includes(ticket.estado) || pendiente;
   const anterior = cot.precioFinalMXN;
@@ -56,11 +56,11 @@ function Detalle({ id, onCerrar, user }) {
     {anterior != null && <p>Precio final: ${formatearMXN(anterior)} MXN (aprox. ${formatearMXN(cot.precioFinalUSD)} USD)</p>}
     {ticket.envio?.codigoError && <p>{textoCodigoEnvio(ticket.envio.codigoError)}</p>}
     <h4>Historial de precios</h4>
-    {ticket.precios?.length ? <ul>{ticket.precios.map((p, i) => <li key={i}>{fecha(p.en)} · ${formatearMXN(p.precioFinalMXN)} MXN</li>)}</ul> : <p>Sin precios enviados.</p>}
+    {ticket.precios?.length ? <ul>{entradasConClave(ticket.precios).map(({ entrada: p, clave }) => <li key={clave}>{fecha(p.en)} · ${formatearMXN(p.precioFinalMXN)} MXN</li>)}</ul> : <p>Sin precios enviados.</p>}
     <h4>Historial de estados</h4>
-    {ticket.historial?.length ? <ul>{ticket.historial.map((paso, i) => <li key={i}>{fecha(paso.en)} · {etiquetaEstado(paso.de)} → {etiquetaEstado(paso.a)} · {etiquetaAutorHistorial(paso, user)}</li>)}</ul> : <p>Sin cambios de estado.</p>}
+    {ticket.historial?.length ? <ul>{entradasConClave(ticket.historial).map(({ entrada: paso, clave }) => <li key={clave}>{fecha(paso.en)} · {etiquetaEstado(paso.de)} → {etiquetaEstado(paso.a)} · {etiquetaAutorHistorial(paso, user)}</li>)}</ul> : <p>Sin cambios de estado.</p>}
     <h4>Decisiones</h4>
-    {ticket.decisiones?.length ? <ul>{ticket.decisiones.map((d, i) => <li key={i} style={{ whiteSpace: 'pre-wrap' }}>{fecha(d.en)} · {etiquetaEstado(d.resultado)}{d.motivo && ` · ${etiquetaMotivoRechazo(d.motivo)}`}{d.comentario && ` · ${d.comentario}`}{d.precioFinalMXN != null && ` · $${formatearMXN(d.precioFinalMXN)} MXN`}</li>)}</ul> : <p>Sin decisiones.</p>}
+    {ticket.decisiones?.length ? <ul>{entradasConClave(ticket.decisiones).map(({ entrada: d, clave }) => <li key={clave} style={{ whiteSpace: 'pre-wrap' }}>{fecha(d.en)} · {etiquetaEstado(d.resultado)}{d.motivo && ` · ${etiquetaMotivoRechazo(d.motivo)}`}{d.comentario && ` · ${d.comentario}`}{d.precioFinalMXN != null && ` · $${formatearMXN(d.precioFinalMXN)} MXN`}</li>)}</ul> : <p>Sin decisiones.</p>}
     {puedeEnviar && <form onSubmit={(e) => { e.preventDefault(); if (!validarPrecioFinal(precio)) { setMensaje('Indica un precio válido, mayor que cero y con máximo dos decimales.'); return; } actuar(() => enviarTicket({ ticketId: id, precioFinalMXN: Number(precio) }), true); }}>
       {['rechazado', 'vencido'].includes(ticket.estado) && anterior != null && <p>Precio anterior: ${formatearMXN(anterior)}</p>}
       <label>Precio final MXN <input type="text" inputMode="decimal" value={precio} onChange={(e) => setPrecio(e.target.value)} disabled={mutation.isPending} /></label>

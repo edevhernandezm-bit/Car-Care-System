@@ -14,7 +14,26 @@ import {
   etiquetaAutoria,
   filtrarTickets,
   etiquetaAutorHistorial,
+  erroresCliente,
+  entradasConClave,
 } from './tickets.js';
+
+test('errores del cliente identifican cada campo inválido', () => {
+  assert.deepEqual(erroresCliente({ nombre: ' ', correo: 'mal', telefono: '1'.repeat(31) }), [
+    'Indica un nombre de hasta 120 caracteres.',
+    'Indica un correo válido de hasta 254 caracteres.',
+    'El teléfono debe tener máximo 30 caracteres.',
+  ]);
+  assert.deepEqual(erroresCliente({ nombre: 'Ana', correo: 'a@b.mx', telefono: '' }), []);
+});
+
+test('claves de historial son únicas y estables al agregar entradas repetidas', () => {
+  const evento = { en: '2026-01-01', a: 'vencido' };
+  const inicial = entradasConClave([evento, evento]);
+  const ampliado = entradasConClave([evento, evento, { en: '2026-01-02' }]);
+  assert.notEqual(inicial[0].clave, inicial[1].clave);
+  assert.deepEqual(ampliado.slice(0, 2), inicial);
+});
 
 test('autoría y filtro comparan identificadores y no atribuyen valores ausentes', () => {
   const user = { id: 123 };

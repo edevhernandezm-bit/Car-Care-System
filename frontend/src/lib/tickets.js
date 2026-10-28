@@ -153,11 +153,28 @@ export function cuerpoCrearTicket({ diagnosticoId, fallasIds, cliente }) {
   };
 }
 
-export function validarCliente(cliente) {
+export function erroresCliente(cliente) {
   const nombre = cliente.nombre.trim();
   const correo = cliente.correo.trim();
-  return nombre.length > 0 && nombre.length <= 120 && correo.length <= 254 &&
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo) && cliente.telefono.trim().length <= 30;
+  const errores = [];
+  if (!nombre || nombre.length > 120) errores.push('Indica un nombre de hasta 120 caracteres.');
+  if (correo.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) errores.push('Indica un correo válido de hasta 254 caracteres.');
+  if (cliente.telefono.trim().length > 30) errores.push('El teléfono debe tener máximo 30 caracteres.');
+  return errores;
+}
+
+export function validarCliente(cliente) {
+  return erroresCliente(cliente).length === 0;
+}
+
+export function entradasConClave(entradas) {
+  const repeticiones = new Map();
+  return entradas.map((entrada) => {
+    const contenido = JSON.stringify(entrada);
+    const numero = repeticiones.get(contenido) || 0;
+    repeticiones.set(contenido, numero + 1);
+    return { entrada, clave: `${contenido}:${numero}` };
+  });
 }
 
 export function precioAnterior(ticket) {
