@@ -10,7 +10,33 @@ import {
   textoCodigoEnvio,
   cuerpoCrearTicket,
   validarCliente,
+  esMio,
+  etiquetaAutoria,
+  filtrarTickets,
+  etiquetaAutorHistorial,
 } from './tickets.js';
+
+test('autoría y filtro comparan identificadores y no atribuyen valores ausentes', () => {
+  const user = { id: 123 };
+  const propios = { creadoPor: '123' };
+  const otros = { creadoPor: '456' };
+  assert.equal(esMio(propios, user), true);
+  assert.equal(esMio({}, {}), false);
+  assert.equal(etiquetaAutoria(propios, user), 'Creado por ti');
+  assert.equal(etiquetaAutoria(otros, user), 'Creado por otro mecánico');
+  assert.deepEqual(filtrarTickets([propios, otros], user, true), [propios]);
+  assert.deepEqual(filtrarTickets([propios, otros], user, false), [propios, otros]);
+});
+
+test('historial distingue mecánicos, cliente, vencimiento y origen desconocido', () => {
+  const user = { id: '123' };
+  assert.equal(etiquetaAutorHistorial({ por: 123 }, user), 'Tú');
+  assert.equal(etiquetaAutorHistorial({ por: '456' }, user), 'Otro mecánico');
+  assert.equal(etiquetaAutorHistorial({ por: null, a: 'vencido' }, user), 'Vencimiento automático');
+  assert.equal(etiquetaAutorHistorial({ por: null, a: 'autorizado' }, user), 'Cliente');
+  assert.equal(etiquetaAutorHistorial({ a: 'rechazado' }, user), 'Cliente');
+  assert.equal(etiquetaAutorHistorial({ a: 'cancelado' }, user), 'Origen no identificado');
+});
 
 test('puedeUsarTickets: admin sin flag -> false', () => {
   assert.equal(puedeUsarTickets({ role: 'administrador_mecanico', features: { tickets: false } }), false);

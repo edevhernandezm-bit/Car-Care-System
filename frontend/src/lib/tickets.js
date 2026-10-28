@@ -27,6 +27,27 @@ export function puedeUsarTickets(user) {
   return user?.features?.tickets === true;
 }
 
+export function esMio(ticket, user) {
+  return ticket?.creadoPor != null && user?.id != null && String(ticket.creadoPor) === String(user.id);
+}
+
+export function etiquetaAutoria(ticket, user) {
+  return esMio(ticket, user) ? 'Creado por ti' : 'Creado por otro mecánico';
+}
+
+export function filtrarTickets(lista, user, soloMios) {
+  return soloMios ? lista.filter((ticket) => esMio(ticket, user)) : lista;
+}
+
+export function etiquetaAutorHistorial(paso, user) {
+  if (paso.por != null && paso.por !== '') {
+    return user?.id != null && String(paso.por) === String(user.id) ? 'Tú' : 'Otro mecánico';
+  }
+  if (paso.a === 'vencido') return 'Vencimiento automático';
+  if (paso.a === 'autorizado' || paso.a === 'rechazado') return 'Cliente';
+  return 'Origen no identificado';
+}
+
 export function validarPrecioFinal(valor) {
   if (valor === '' || valor === null || valor === undefined) return false;
   const s = String(valor);

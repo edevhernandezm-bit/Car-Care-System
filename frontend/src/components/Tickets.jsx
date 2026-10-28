@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { cambiarEstadoTicket, enviarTicket, listarTickets, obtenerTicket } from '../lib/api.js';
-import { envioPendiente, etiquetaEstado, etiquetaMotivoRechazo, formatearMXN, requiereAtencion, textoCodigoEnvio, validarPrecioFinal } from '../lib/tickets.js';
+import { useAuth } from '../context/AuthContext.jsx';
+import { envioPendiente, etiquetaAutoria, etiquetaAutorHistorial, etiquetaEstado, etiquetaMotivoRechazo, filtrarTickets, formatearMXN, requiereAtencion, textoCodigoEnvio, validarPrecioFinal } from '../lib/tickets.js';
 
 const fecha = (valor) => valor ? new Date(valor).toLocaleString('es-MX') : '';
 
-function Detalle({ id, onCerrar }) {
+function Detalle({ id, onCerrar, user }) {
   const queryClient = useQueryClient();
   const [precio, setPrecio] = useState('');
   const [mensaje, setMensaje] = useState('');
@@ -42,6 +43,7 @@ function Detalle({ id, onCerrar }) {
   return <article className="info-card"><div className="card-body">
     <button type="button" className="secondary-btn" onClick={onCerrar} disabled={mutation.isPending}>Volver a la lista</button>
     <h3>Detalle del ticket</h3>
+    <p>{etiquetaAutoria(ticket, user)}</p>
     <p>{etiquetaEstado(ticket.estado)} {pendiente && '· Envío pendiente'}</p>
     <p>{[ticket.vehiculo?.marca, ticket.vehiculo?.modelo, ticket.vehiculo?.anio, ticket.vehiculo?.transmision].filter(Boolean).join(' ')}</p>
     <p style={{ whiteSpace: 'pre-wrap' }}>Cliente: {ticket.cliente?.nombre}</p>
@@ -55,6 +57,8 @@ function Detalle({ id, onCerrar }) {
     {ticket.envio?.codigoError && <p>{textoCodigoEnvio(ticket.envio.codigoError)}</p>}
     <h4>Historial de precios</h4>
     {ticket.precios?.length ? <ul>{ticket.precios.map((p, i) => <li key={i}>{fecha(p.en)} · ${formatearMXN(p.precioFinalMXN)} MXN</li>)}</ul> : <p>Sin precios enviados.</p>}
+    <h4>Historial de estados</h4>
+    {ticket.historial?.length ? <ul>{ticket.historial.map((paso, i) => <li key={i}>{fecha(paso.en)} · {etiquetaEstado(paso.de)} → {etiquetaEstado(paso.a)} · {etiquetaAutorHistorial(paso, user)}</li>)}</ul> : <p>Sin cambios de estado.</p>}
     <h4>Decisiones</h4>
     {ticket.decisiones?.length ? <ul>{ticket.decisiones.map((d, i) => <li key={i} style={{ whiteSpace: 'pre-wrap' }}>{fecha(d.en)} · {etiquetaEstado(d.resultado)}{d.motivo && ` · ${etiquetaMotivoRechazo(d.motivo)}`}{d.comentario && ` · ${d.comentario}`}{d.precioFinalMXN != null && ` · $${formatearMXN(d.precioFinalMXN)} MXN`}</li>)}</ul> : <p>Sin decisiones.</p>}
     {puedeEnviar && <form onSubmit={(e) => { e.preventDefault(); if (!validarPrecioFinal(precio)) { setMensaje('Indica un precio válido, mayor que cero y con máximo dos decimales.'); return; } actuar(() => enviarTicket({ ticketId: id, precioFinalMXN: Number(precio) }), true); }}>
@@ -71,20 +75,27 @@ function Detalle({ id, onCerrar }) {
 }
 
 export default function Tickets({ ticketAbiertoId, onAbrir }) {
+  const { user } = useAuth();
   const [offset, setOffset] = useState(0);
+  const [soloMios, setSoloMios] = useState(false);
   const lista = useQuery({ queryKey: ['tickets', 'lista', offset], queryFn: ({ signal }) => listarTickets(offset, signal), staleTime: 0, refetchOnMount: 'always' });
-  if (ticketAbiertoId) return <Detalle key={ticketAbiertoId} id={ticketAbiertoId} onCerrar={() => onAbrir(null)} />;
+  if (ticketAbiertoId) return <Detalle key={ticketAbiertoId} id={ticketAbiertoId} user={user} onCerrar={() => onAbrir(null)} />;
   if (lista.isPending) return <p role="status">Cargando tickets…</p>;
   if (lista.isError) return <p role="alert">No se pudieron cargar los tickets.</p>;
   const { tickets = [], total = 0, limit = 20 } = lista.data;
+  const visibles = filtrarTickets(tickets, user, soloMios);
   return <div className="historial-lista">
-    {tickets.length === 0 && <p>No hay tickets.</p>}
-    {tickets.map((ticket) => <article className="info-card" key={ticket._id}><div className="card-body">
+    <label>Mostrar <select value={soloMios ? 'mios' : 'todos'} onChange={(e) => setSoloMios(e.target.value === 'mios')}><option value="todos">Todos</option><option value="mios">Solo mis tickets</option></select></label>
+    <p>El filtro solo afecta los tickets de esta página.</p>
+    <p>{visibles.length} tickets visibles en esta página.</p>
+    {visibles.length === 0 && <p>{soloMios ? 'No hay tickets tuyos en esta página.' : 'No hay tickets.'}</p>}
+    {visibles.map((ticket) => <article className="info-card" key={ticket._id}><div className="card-body">
       <h3>{[ticket.vehiculo?.marca, ticket.vehiculo?.modelo].filter(Boolean).join(' ') || 'Vehículo'}</h3>
+      <p>{etiquetaAutoria(ticket, user)}</p>
       <p>{etiquetaEstado(ticket.estado)} {envioPendiente(ticket) && '· Envío pendiente'}</p>
       {requiereAtencion(ticket) && <p className="text-danger">Requiere atención</p>}
       <button type="button" className="secondary-btn" onClick={() => onAbrir(ticket._id)}>Ver detalle</button>
     </div></article>)}
-    <div><button className="secondary-btn" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))}>Anterior</button> <span>{offset + 1}–{Math.min(offset + limit, total)} de {total}</span> <button className="secondary-btn" disabled={offset + limit >= total} onClick={() => setOffset(offset + limit)}>Siguiente</button></div>
+    <div><button className="secondary-btn" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))}>Anterior</button> <span>{total === 0 ? 0 : offset + 1}–{Math.min(offset + limit, total)} de {total} tickets en total</span> <button className="secondary-btn" disabled={offset + limit >= total} onClick={() => setOffset(offset + limit)}>Siguiente</button></div>
   </div>;
 }
