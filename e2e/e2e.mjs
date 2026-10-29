@@ -1304,6 +1304,62 @@ const FALLA_VALIDA = {
   certezaBase: 0.7,
 };
 
+test('T8 | Fallas: rechaza colisión estática y borrar un id inexistente no altera el motor', async () => {
+  const cookie = await sesionGateway();
+  const antes = await prologDiagnostico({ marca: 'gen', modelo: 'gen', anio: 0, sintomas: ['chirrido_al_frenar'] });
+  assert.ok(antes.fallas.some((f) => f.id === 'pastillas_freno'));
+  const creada = await api('/api/fallas', { method: 'POST', cookie, body: { ...FALLA_VALIDA, nombre: 'Pastillas freno' } });
+  assert.equal(creada.status, 409);
+  assert.equal(creada.body.error, 'Ese nombre coincide con una falla ya existente');
+  const borrado = await api('/api/fallas/000000000000000000000000', { method: 'DELETE', cookie });
+  assert.equal(borrado.status, 404);
+  const despues = await prologDiagnostico({ marca: 'gen', modelo: 'gen', anio: 0, sintomas: ['chirrido_al_frenar'] });
+  assert.deepEqual(despues.fallas, antes.fallas);
+  const lista = await api('/api/fallas', { cookie });
+  assert.equal(lista.body.some((f) => f.prologId === 'pastillas_freno'), false);
+});
+
+test('T8 | Fallas: rechaza duplicado dinámico sin crear otra entrada', async () => {
+  const cookie = await sesionGateway();
+  const body = { ...FALLA_VALIDA, nombre: 'Falla duplicada T8' };
+  const primera = await api('/api/fallas', { method: 'POST', cookie, body });
+  assert.equal(primera.status, 201);
+  try {
+    const segunda = await api('/api/fallas', { method: 'POST', cookie, body });
+    assert.equal(segunda.status, 409);
+    const lista = await api('/api/fallas', { cookie });
+    assert.equal(lista.body.filter((f) => f.prologId === 'falla_duplicada_t8').length, 1);
+  } finally {
+    await api(`/api/fallas/${primera.body._id}`, { method: 'DELETE', cookie });
+  }
+});
+
+test('T8 | Fallas: motor caído rechaza alta sin crear documento', async () => {
+  const sonda = crearServidorHttp();
+  await new Promise((r) => sonda.listen(0, '127.0.0.1', r));
+  const puertoCerrado = sonda.address().port;
+  await new Promise((r) => sonda.close(r));
+  const puertoApi = PUERTO_API + 7;
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BACKEND_DIR,
+    env: { ...process.env, PORT: String(puertoApi), MONGO_URI: TEST_DB, MOTOR_TOKEN: MOTOR_TOKEN_E2E, PROLOG_BASE: `http://127.0.0.1:${puertoCerrado}`, PROLOG_BASES: '', PROLOG_TIMEOUT_MS: '400' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  proc.stdout.pipe(createWriteStream(null, { fd: openSync(logPath('t8-motor-caido.out'), 'w') }));
+  proc.stderr.pipe(createWriteStream(null, { fd: openSync(logPath('t8-motor-caido.err'), 'w') }));
+  try {
+    await sondeo(`http://localhost:${puertoApi}/api/config/tipo-cambio`, { timeout: 30000 });
+    const cookie = await sesionGateway();
+    const respuesta = await peticionGateway(`http://localhost:${puertoApi}`, '/api/fallas', { method: 'POST', cookie, body: { ...FALLA_VALIDA, nombre: 'Motor caido T8' } });
+    assert.equal(respuesta.status, 502);
+    assert.deepEqual(await respuesta.json(), { error: 'Motor de inferencia no disponible' });
+    const lista = await api('/api/fallas', { cookie });
+    assert.equal(lista.body.some((f) => f.prologId === 'motor_caido_t8'), false);
+  } finally {
+    if (proc.pid) matarArbol(proc.pid);
+  }
+});
+
 test('13 | Sesión: sin cookie, las rutas de administración responden 401', async () => {
   const escritura = await api('/api/fallas', { method: 'POST', body: FALLA_VALIDA });
   assert.equal(escritura.status, 401, 'crear una falla sin sesión debe ser 401');
@@ -1480,6 +1536,12 @@ test('17 | Índice parcial: una falla borrada deja libre su prologId', async () 
 
   const borrado = await api(`/api/fallas/${primera.body._id}`, { method: 'DELETE', cookie });
   assert.equal(borrado.status, 200);
+
+  for (let i = 0; i < 40; i++) {
+    const catalogo = await (await fetch(`http://localhost:${PUERTO_PROLOG}/api/fallas`, { headers: CH_MOTOR })).json();
+    if (!catalogo.fallas.some((f) => f.id === primera.body.prologId)) break;
+    await sleep(100);
+  }
 
   const segunda = await api('/api/fallas', {
     method: 'POST',

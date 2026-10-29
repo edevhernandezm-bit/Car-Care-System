@@ -1862,6 +1862,21 @@ app.post('/api/fallas', requireAdmin, async (req, res, next) => {
       return res.status(409).json({ error: `Ya existe una falla con el identificador "${prologId}".` });
     }
 
+    const { respuesta, cuerpo } = await pedirAMotor('/api/fallas', { method: 'GET', headers: CABECERAS_MOTOR });
+    let catalogo;
+    try {
+      catalogo = JSON.parse(cuerpo);
+    } catch {
+      return res.status(502).json({ error: 'Motor de inferencia no disponible' });
+    }
+    if (!respuesta.ok || catalogo?.status !== 'success' || !Array.isArray(catalogo.fallas) ||
+        catalogo.fallas.some((f) => !f || typeof f.id !== 'string')) {
+      return res.status(502).json({ error: 'Motor de inferencia no disponible' });
+    }
+    if (catalogo.fallas.some((f) => f.id === prologId)) {
+      return res.status(409).json({ error: 'Ese nombre coincide con una falla ya existente' });
+    }
+
     const creada = await Falla.create({
       nombre: b.nombre.trim(),
       prologId,
