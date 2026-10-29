@@ -22,7 +22,7 @@ usuario y rol).
 |---|---|---|
 | Node.js | 20 o superior | El E2E usa el runner de tests nativo |
 | SWI-Prolog | 8 o superior | Si no esta en el PATH, define `SWIPL` con la ruta a `swipl.exe` |
-| MongoDB | 6 o superior | Se espera en `mongodb://localhost:27017/car_care_system` (base local: contenedor `mongodb-opencode`) |
+| MongoDB | 6 o superior | Se espera en `mongodb://localhost:27017/car_care_system` (cualquier MongoDB local) |
 
 Instala dependencias una sola vez (comprueba `node`/`npm`, instala backend y
 frontend, y avisa si falta SWI-Prolog o MongoDB):
@@ -287,7 +287,7 @@ pieza en un contenedor. Hay Dockerfile para el motor (`Prolog/Dockerfile`, expon
 el 8000) y para la API (`backend/Dockerfile`, expone el 5000):
 
 ```powershell
-docker start mongodb-opencode   # base local del proyecto: MongoDB en el 27017
+docker run -d --name car-care-mongo  -p 27017:27017 mongo:7
 docker build -t car-care-prolog -f Prolog/Dockerfile Prolog
 docker run -d --name car-care-prolog -p 8000:8000 car-care-prolog
 docker build -t car-care-api -f backend/Dockerfile backend
