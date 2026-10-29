@@ -6,6 +6,7 @@
     "test": "npm --prefix frontend test && npm --prefix backend test",
     "test:frontend": "npm --prefix frontend test",
     "test:e2e": "npm --prefix backend test",
+    "test:scripts": "node --test scripts/estadisticas-corte.test.mjs",
     "build": "npm --prefix frontend run build",
     "seed": "node scripts/seed-diagnosticos.mjs",
     "smoke": "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test.ps1"
