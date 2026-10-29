@@ -39,6 +39,8 @@ export default function Paso2Sintomas({
         </div>
       </section>
 
+      <p>La lista de síntomas es general; no todos tienen reglas para todos los vehículos.</p>
+
       {Object.keys(categorias).length === 0 ? (
         <EstadoVacio
           titulo={

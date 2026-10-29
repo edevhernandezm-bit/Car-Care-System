@@ -188,10 +188,10 @@ export default function Resultados({ resultados, onVolver, onCambiarVehiculo, on
             <SkeletonResultados />
           ) : fallas.length === 0 ? (
             <div className="empty-state">
-              <h4>Ninguna falla coincide con esos síntomas</h4>
+              <h4>Sin fallas aplicables</h4>
               <p>
-                El motor descarta una falla cuando ningún síntoma confirmado encaja en sus reglas.
-                Prueba con menos síntomas o revisa que estén bien marcados.
+                No hay una regla del sistema que coincida con este vehículo y estos síntomas. Esto no descarta una falla.
+                Revisa que marca, modelo, año y transmisión estén bien escritos, prueba con otros síntomas o consulta a un mecánico.
               </p>
             </div>
           ) : (
