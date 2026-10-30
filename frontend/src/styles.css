@@ -2171,6 +2171,41 @@ h4 {
   gap: 16px;
 }
 
+.ticket-filtro {
+  width: min(100%, 280px);
+  margin-bottom: 0;
+}
+
+.ticket-formulario {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.ticket-falla {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ticket-cliente {
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  margin: 20px 0;
+}
+
+.ticket-paginacion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.ticket-detalle {
+  overflow-wrap: anywhere;
+}
+
 .historial-meta {
   display: flex;
   flex-wrap: wrap;

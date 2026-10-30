@@ -36,16 +36,20 @@ export default function CrearTicket({ diagnosticoId, fallas, onCreado }) {
   return <div className="card-section">
     {!abierto ? <button type="button" className="primary-btn" onClick={() => setAbierto(true)}>Crear ticket</button> :
       <form onSubmit={guardar}>
-        <fieldset disabled={mutation.isPending}>
+        <fieldset className="ticket-formulario" disabled={mutation.isPending}>
           <legend>Selecciona al menos una falla</legend>
-          {fallas.map((f) => <label key={f.id} style={{ display: 'block' }}>
+          {fallas.map((f) => <label key={f.id} className="ticket-falla">
             <input type="checkbox" checked={seleccion.includes(f.id)} onChange={() => setSeleccion((prev) => prev.includes(f.id) ? prev.filter((id) => id !== f.id) : [...prev, f.id])} /> {f.nombre}
           </label>)}
-          <label>Nombre <input autoFocus value={cliente.nombre} maxLength={120} required onChange={(e) => setCliente({ ...cliente, nombre: e.target.value })} /></label>
-          <label>Correo <input type="email" value={cliente.correo} maxLength={254} required onChange={(e) => setCliente({ ...cliente, correo: e.target.value })} /></label>
-          <label>Teléfono (opcional) <input type="tel" value={cliente.telefono} maxLength={30} onChange={(e) => setCliente({ ...cliente, telefono: e.target.value })} /></label>
-          <button className="primary-btn" type="submit">Crear ticket</button>
-          <button className="secondary-btn" type="button" onClick={() => setAbierto(false)}>Volver</button>
+          <div className="form-grid ticket-cliente">
+            <label><span>Nombre</span><input value={cliente.nombre} maxLength={120} required onChange={(e) => setCliente({ ...cliente, nombre: e.target.value })} /></label>
+            <label><span>Correo</span><input type="email" value={cliente.correo} maxLength={254} required onChange={(e) => setCliente({ ...cliente, correo: e.target.value })} /></label>
+            <label><span>Teléfono (opcional)</span><input type="tel" value={cliente.telefono} maxLength={30} onChange={(e) => setCliente({ ...cliente, telefono: e.target.value })} /></label>
+          </div>
+          <div className="form-actions">
+            <button className="primary-btn" type="submit">Crear ticket</button>
+            <button className="secondary-btn" type="button" onClick={() => setAbierto(false)}>Volver</button>
+          </div>
         </fieldset>
         <p className="text-danger" role="alert">{error}</p>
       </form>}

@@ -40,7 +40,7 @@ function Detalle({ id, onCerrar, user }) {
   const puedeEnviar = ['diagnosticado', 'rechazado', 'vencido'].includes(ticket.estado) || pendiente;
   const anterior = cot.precioFinalMXN;
   const puedeCancelar = !['terminado', 'cancelado'].includes(ticket.estado);
-  return <article className="info-card"><div className="card-body">
+  return <article className="info-card"><div className="card-body ticket-detalle">
     <button type="button" className="secondary-btn" onClick={onCerrar} disabled={mutation.isPending}>Volver a la lista</button>
     <h3>Detalle del ticket</h3>
     <p>{etiquetaAutoria(ticket, user)}</p>
@@ -63,7 +63,7 @@ function Detalle({ id, onCerrar, user }) {
     {ticket.decisiones?.length ? <ul>{entradasConClave(ticket.decisiones).map(({ entrada: d, clave }) => <li key={clave} style={{ whiteSpace: 'pre-wrap' }}>{fecha(d.en)} · {etiquetaEstado(d.resultado)}{d.motivo && ` · ${etiquetaMotivoRechazo(d.motivo)}`}{d.comentario && ` · ${d.comentario}`}{d.precioFinalMXN != null && ` · $${formatearMXN(d.precioFinalMXN)} MXN`}</li>)}</ul> : <p>Sin decisiones.</p>}
     {puedeEnviar && <form onSubmit={(e) => { e.preventDefault(); if (!validarPrecioFinal(precio)) { setMensaje('Indica un precio válido, mayor que cero y con máximo dos decimales.'); return; } actuar(() => enviarTicket({ ticketId: id, precioFinalMXN: Number(precio) }), true); }}>
       {['rechazado', 'vencido'].includes(ticket.estado) && anterior != null && <p>Precio anterior: ${formatearMXN(anterior)}</p>}
-      <label>Precio final MXN <input type="text" inputMode="decimal" value={precio} onChange={(e) => setPrecio(e.target.value)} disabled={mutation.isPending} /></label>
+      <div className="form-group input-group"><label className="form-group-label" htmlFor="ticket-precio">Precio final MXN</label><input id="ticket-precio" type="text" inputMode="decimal" value={precio} onChange={(e) => setPrecio(e.target.value)} disabled={mutation.isPending} /></div>
       {validarPrecioFinal(precio) && Number(precio) < cot.totalMinMXN && <p className="field-hint">El precio es menor al mínimo de referencia del catálogo.</p>}
       <button className="primary-btn" type="submit" disabled={mutation.isPending}>{pendiente ? 'Reintentar' : ticket.estado === 'diagnosticado' ? 'Enviar cotización' : 'Reenviar cotización'}</button>
     </form>}
@@ -81,11 +81,11 @@ export default function Tickets({ ticketAbiertoId, onAbrir }) {
   const lista = useQuery({ queryKey: ['tickets', 'lista', offset], queryFn: ({ signal }) => listarTickets(offset, signal), staleTime: 0, refetchOnMount: 'always' });
   if (ticketAbiertoId) return <Detalle key={ticketAbiertoId} id={ticketAbiertoId} user={user} onCerrar={() => onAbrir(null)} />;
   if (lista.isPending) return <p role="status">Cargando tickets…</p>;
-  if (lista.isError) return <p role="alert">No se pudieron cargar los tickets.</p>;
+  if (lista.isError) return <div><p role="alert">No se pudieron cargar los tickets.</p><button type="button" className="secondary-btn" onClick={() => lista.refetch()}>Reintentar</button></div>;
   const { tickets = [], total = 0, limit = 20 } = lista.data;
   const visibles = filtrarTickets(tickets, user, soloMios);
   return <div className="historial-lista">
-    <label>Mostrar <select value={soloMios ? 'mios' : 'todos'} onChange={(e) => setSoloMios(e.target.value === 'mios')}><option value="todos">Todos</option><option value="mios">Solo mis tickets</option></select></label>
+    <div className="form-group input-group ticket-filtro"><label className="form-group-label" htmlFor="ticket-filtro">Mostrar</label><select id="ticket-filtro" value={soloMios ? 'mios' : 'todos'} onChange={(e) => setSoloMios(e.target.value === 'mios')}><option value="todos">Todos</option><option value="mios">Solo mis tickets</option></select></div>
     <p>El filtro solo afecta los tickets de esta página.</p>
     <p>{visibles.length} tickets visibles en esta página.</p>
     {visibles.length === 0 && <p>{soloMios ? 'No hay tickets tuyos en esta página.' : 'No hay tickets.'}</p>}
@@ -96,6 +96,6 @@ export default function Tickets({ ticketAbiertoId, onAbrir }) {
       {requiereAtencion(ticket) && <p className="text-danger">Requiere atención</p>}
       <button type="button" className="secondary-btn" onClick={() => onAbrir(ticket._id)}>Ver detalle</button>
     </div></article>)}
-    <div><button className="secondary-btn" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))}>Anterior</button> <span>{total === 0 ? 0 : offset + 1}–{Math.min(offset + limit, total)} de {total} tickets en total</span> <button className="secondary-btn" disabled={offset + limit >= total} onClick={() => setOffset(offset + limit)}>Siguiente</button></div>
+    <div className="ticket-paginacion"><button className="secondary-btn" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))}>Anterior</button> <span>{total === 0 ? 0 : offset + 1}–{Math.min(offset + limit, total)} de {total} tickets en total</span> <button className="secondary-btn" disabled={offset + limit >= total} onClick={() => setOffset(offset + limit)}>Siguiente</button></div>
   </div>;
 }
