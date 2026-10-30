@@ -117,7 +117,7 @@ function appCon({
   // actualizado que devuelve la ruta.
   let lecturas = 0;
   const Ticket = {
-    findById: () => consulta(++lecturas === 1 ? ticket : final),
+    findById: () => consulta(++lecturas <= 2 ? ticket : final),
     find: (filtro) =>
       consulta(filtro?.tokenVenceEn ? candidatos : Array.isArray(final) ? final : [final]),
     countDocuments: async () => (Array.isArray(final) ? final.length : 1),
@@ -127,8 +127,11 @@ function appCon({
       return { ...actualizado, estado: actualizado.estado || 'cotizacion_enviada' };
     },
     async updateOne(_filtro, update) {
+      if (update.$set?.['envio.bloqueoId'] || update.$unset?.['envio.bloqueoId'] !== undefined) {
+        return { acknowledged: true, matchedCount: 1 };
+      }
       actualizaciones.push(update);
-      return { acknowledged: true };
+      return { acknowledged: true, matchedCount: 1 };
     },
   };
 

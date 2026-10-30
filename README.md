@@ -1,18 +1,14 @@
-# Car-Care-System
-Sistema Experto para detectar fallas automotrices
+# Car Care System
 
-#Prototipo de Proyecto Modular para presentar en Ingenieria en informatica
+Prototipo universitario de sistema experto para orientar el diagnóstico de fallas
+automotrices. Utiliza síntomas y datos del vehículo para consultar reglas en Prolog.
+Los resultados orientan la revisión y no sustituyen la inspección de un mecánico.
 
--Sistema experto con motor de inferencia hecho en prolog  con 20 fallas descritas con sus respectivos sintomas
-
--Dependiendo del modelo, año y tipo de transmisión del auto son las fallas que se pueden recuperar o diagnosticar
-
--El sistema experto en prolog se conecta mediante un front end web (HTML,CSS Y JS) para asi consultarlo en una interfaz amigable al usuario
-
--Tiene cuentas de usuario: el administrador gestiona con quien entra (CRUD de
-usuarios y de fallas del catalogo), y el estudiante se limita a diagnosticar y
-consultar. Cada quien edita su propio perfil (nombre, contraseña y, el admin,
-usuario y rol).
+La interfaz usa React y Vite. La API usa Node.js, Express y MongoDB. El motor de
+inferencia se ejecuta por separado con SWI-Prolog. El administrador gestiona
+usuarios y fallas; el estudiante puede diagnosticar y consultar. El módulo
+opcional de tickets permite enviar cotizaciones y registrar la respuesta del cliente.
+El factor de certeza es heurístico: no es una probabilidad ni una medida de exactitud.
 
 ## Como levantarlo
 
@@ -20,7 +16,7 @@ usuario y rol).
 
 | Componente | Version | Nota |
 |---|---|---|
-| Node.js | 20 o superior | El E2E usa el runner de tests nativo |
+| Node.js | 20.19.x o 22.12 o superior | Versiones admitidas por Vite 8 |
 | SWI-Prolog | 8 o superior | Si no esta en el PATH, define `SWIPL` con la ruta a `swipl.exe` |
 | MongoDB | 6 o superior | Se espera en `mongodb://localhost:27017/car_care_system` (cualquier MongoDB local) |
 
@@ -48,6 +44,10 @@ arranca la API contra una base vacia a partir del entorno:
    - `ADMIN_USERNAME` (p. ej. `admin`)
    - `ADMIN_PASSWORD` (p. ej. `admin123`, cambiala)
    - `ADMIN_NOMBRE` (opcional, por defecto `Administrador`)
+
+Para usar MongoDB local, cambia el ejemplo de `MONGO_URI` por
+`mongodb://localhost:27017/car_care_system`. El ejemplo contiene una URL de Atlas
+de marcador de posición y no funciona sin configurarla.
 
 Si la base ya tiene usuarios, esas variables no tocan nada: el administrador
 semilla solo se crea cuando la coleccion de usuarios esta vacia.
@@ -126,12 +126,19 @@ cd frontend && npm test
 El e2e levanta su propio stack y sí necesita MongoDB y SWI-Prolog:
 
 ```bash
-cd backend && npm test
+npm run test:e2e
 ```
 
-La suite levanta su propio stack (motor, API, Vite y Mongo) contra una base
-`car_care_e2e` que se borra al terminar, asi que no toca los datos de
-desarrollo.
+La suite inicia el motor, la API y Vite. MongoDB debe estar ejecutándose.
+**La suite borra la base local `car_care_e2e` antes de comenzar.** No la uses
+para datos que necesites conservar. Los datos de prueba pueden permanecer al terminar.
+
+Para ejecutar las pruebas de tickets y del script de estadísticas:
+
+```bash
+npm --prefix backend run test:tickets
+npm run test:scripts
+```
 
 Desde la raiz, todo de una vez:
 
@@ -166,44 +173,8 @@ un host remoto salvo que se pase `--permitir-remoto`.
 
 ### Dimensionamiento del motor
 
-El motor atiende con un pool de hilos HTTP. SWI usa 5 hilos por defecto y espera
-2 s antes de cerrar una conexion keep-alive ociosa. Con mas conexiones vivas que
-hilos, las que no caben esperan a que uno se libere; y un hilo aparcado en una
-conexion keep-alive no se suelta hasta agotar esos 2 s, asi que la latencia sube
-en escalones de ~2 s (4 s si hay dos rondas de espera). Eso hacia fallar por
-reinicio de conexion la tormenta del test 28 y el 502 por timeout del test 29.
-
-Se corrige cargando `library(http/http_dyn_workers)` (el pool crece solo cuando
-la cola de aceptacion se llena, hasta 100 hilos) y ajustando `workers` y
-`keep_alive_timeout` por entorno: `MOTOR_WORKERS` (16 por defecto) y
-`MOTOR_KEEPALIVE_S` (1 por defecto).
-
-Barrido de concurrencia: una rafaga limpia de N peticiones concurrentes a
-`/health`, de 5 a 64, con 3 s entre rafagas para dejar vencer los parkings
-keep-alive. Total en ms de cada rafaga (0 errores en las tres columnas):
-
-| concurrentes | BEFORE (workers=5, keep_alive=2) | dyn_workers solo (5, 2) | AFTER (16, 1) |
-|---|---|---|---|
-| 5 | 10 | 10 | 11 |
-| 6 | 9 | 10 | 9 |
-| 8 | 2010 | 10 | 11 |
-| 10 | 11 | 13 | 12 |
-| 12 | 2010 | 12 | 13 |
-| 14 | 13 | 16 | 14 |
-| 16 | 2011 | 16 | 18 |
-| 18 | 2021 | 18 | 20 |
-| 20 | 2009 | 21 | 19 |
-| 24 | 4015 | 23 | 23 |
-| 32 | 2013 | 31 | 36 |
-| 48 | 4034 | 45 | 36 |
-| 64 | 4036 | 56 | 51 |
-
-Lo que elimina los escalones es `http_dyn_workers`: con el pool fijo de 5 hilos y
-2 s de keep-alive ya baja de 56 ms a 64 concurrentes. El pool inicial de 16 y el
-keep-alive de 1 s son el margen que se deja: 16 hilos ya creados evitan pagar la
-creacion de hilos en la primera rafaga, y 1 s recorta a la mitad la ventana en
-que un hilo queda aparcado. El contenedor puede ajustar los dos con
-`MOTOR_WORKERS` y `MOTOR_KEEPALIVE_S`.
+El motor usa un pool de hilos HTTP dinámico. `MOTOR_WORKERS` controla el número
+inicial de hilos y `MOTOR_KEEPALIVE_S` el tiempo de espera de conexiones inactivas.
 
 ### Semilla de diagnosticos (datos de demostracion)
 
@@ -273,6 +244,12 @@ presupuesto, baje `--cantidad` o suba el cupo.
 | `ADMIN_PASSWORD` | — | Contraseña del primer administrador (solo si la base esta vacia) |
 | `ADMIN_NOMBRE` | `Administrador` | Nombre visible del primer administrador |
 | `SWIPL` | instalacion estandar | Ruta a `swipl.exe` |
+| `TICKETS_ENABLED` | `false` | Activa las rutas y la interfaz de tickets |
+| `MAIL_PROVIDER` | `ninguno` | Proveedor: `ninguno`, `fake` o `resend`; `fake` no se admite en producción |
+| `MAIL_FROM` | — | Remitente configurado para Resend |
+| `MAIL_API_KEY` | — | Clave de Resend; mantener fuera del repositorio |
+| `PUBLIC_APP_URL` | — | URL del frontend usada en enlaces de cotización |
+| `PUBLIC_RATE_LIMIT_MAX` | `20` | Límite de solicitudes a rutas públicas por ventana |
 
 `MOTOR_TOKEN` la leen los dos contenedores y es lo unico que debe valer lo mismo
 en la task definition de la API y en la del motor: con ese token compartido, la
@@ -280,19 +257,17 @@ API se autentica ante el motor. El `PORT` de cada contenedor es el suyo (la API
 escucha en 5000 y el motor en 8000 por defecto) y no tienen nada que ver entre
 si; si los iguala, la API no encontrara al motor.
 
-### Instalacion con Docker (opcional)
+### Imágenes Docker
 
-En vez de instalar MongoDB, SWI-Prolog y Node localmente se puede correr cada
-pieza en un contenedor. Hay Dockerfile para el motor (`Prolog/Dockerfile`, expone
-el 8000) y para la API (`backend/Dockerfile`, expone el 5000):
+Construye ambas imágenes desde la raíz del repositorio:
 
 ```powershell
-docker run -d --name car-care-mongo  -p 27017:27017 mongo:7
-docker build -t car-care-prolog -f Prolog/Dockerfile Prolog
-docker run -d --name car-care-prolog -p 8000:8000 car-care-prolog
-docker build -t car-care-api -f backend/Dockerfile backend
-docker run -d --name car-care-api -p 5000:5000 --env-file backend\.env car-care-api
+docker build -t car-care-prolog -f Prolog/Dockerfile .
+docker build -t car-care-api -f backend/Dockerfile .
 ```
 
-El frontend se sigue corriendo con Vite en local (`npm run setup` + scripts de
-arranque); no hay imagen para el frontend.
+Los contenedores necesitan conectividad hacia MongoDB y el motor. Configura
+`MONGO_URI` y `PROLOG_BASE` con direcciones accesibles desde el contenedor de la
+API; `localhost` dentro de un contenedor no identifica a otro contenedor. En
+producción, configura el mismo `MOTOR_TOKEN` en la API y el motor y usa secretos
+seguros. El repositorio no incluye una imagen Docker para el frontend.

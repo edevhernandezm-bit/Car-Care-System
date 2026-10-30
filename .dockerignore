@@ -1,6 +1,12 @@
 .git
+.agents
+.claude
+.opencode
+.ua
+.archify
 **/node_modules
 .env*
+**/.env*
 frontend/dist
 scripts/resultados
 .cloud-state.json

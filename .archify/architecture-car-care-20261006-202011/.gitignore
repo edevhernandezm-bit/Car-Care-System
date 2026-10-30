@@ -1,4 +1,0 @@
-# Recibos de validacion de Archify (evidencia local de la generacion).
-# Solo se versiona el diagrama (car-care-architecture.html) y su fuente
-# (candidate.json) para poder regenerarlo.
-car-care-architecture.*.json

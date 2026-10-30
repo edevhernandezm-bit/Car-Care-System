@@ -5,7 +5,7 @@
     "setup": "powershell -ExecutionPolicy Bypass -File scripts\\setup.ps1",
     "test": "npm --prefix frontend test && npm --prefix backend test",
     "test:frontend": "npm --prefix frontend test",
-    "test:e2e": "npm --prefix backend test",
+    "test:e2e": "npm --prefix backend test && node --test e2e/tickets-concurrencia.test.mjs",
     "test:scripts": "node --test scripts/estadisticas-corte.test.mjs",
     "build": "npm --prefix frontend run build",
     "seed": "node scripts/seed-diagnosticos.mjs",

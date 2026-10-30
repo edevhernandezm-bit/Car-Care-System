@@ -1,5 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const { randomUUID } = require('node:crypto');
 
 const { esClaveDuplicada, codigoErrorValido } = require('./modelo');
 const {
@@ -21,6 +22,8 @@ const LIMITE_MAXIMO = 100;
 const LIMITE_ATENCION = 200;
 const ESTADOS_MECANICO = ['en_reparacion', 'terminado', 'cancelado'];
 const ESTADOS_ATENCION = ['autorizado', 'rechazado', 'vencido'];
+// shortcut: el bloqueo vence tras 2 minutos; usar una cola con renovacion si un envio puede durar mas.
+const BLOQUEO_ENVIO_MS = 120000;
 
 function idValido(id) {
   return mongoose.isValidObjectId(id);
@@ -110,7 +113,7 @@ function codigoDeEnvio(error) {
 
 // Registra el resultado del intento. En exito se borra el codigo y la fecha del
 // ultimo intento se conserva (actualizada); en fallo se guarda el codigo fijo.
-async function registrarIntento(Ticket, id, enviado, codigo) {
+async function registrarIntento(Ticket, id, bloqueoId, enviado, codigo) {
   const update = {
     $set: {
       'envio.enviado': enviado,
@@ -123,7 +126,7 @@ async function registrarIntento(Ticket, id, enviado, codigo) {
   } else {
     update.$set['envio.codigoError'] = codigo;
   }
-  return Ticket.updateOne({ _id: id }, update);
+  return Ticket.updateOne({ _id: id, 'envio.bloqueoId': bloqueoId }, update);
 }
 
 async function catalogoDelMotor({ pedirAMotor, cabecerasMotor }) {
@@ -335,94 +338,120 @@ function crearRutasTickets({
         return res.status(422).json({ error: 'Datos no válidos' });
       }
 
-      const precioMXN = centavos / 100;
-      const precioUSD = Math.round(centavos / tasa) / 100;
-      const ahora = new Date();
-      const precioSet = {
-        'cotizacion.precioFinalMXN': precioMXN,
-        'cotizacion.precioFinalUSD': precioUSD,
-        'cotizacion.leyenda': LEYENDA_PRECIO_FINAL,
-      };
-      const precioEntrada = {
-        precioFinalMXN: precioMXN,
-        en: ahora,
-        por: req.session.userId,
-      };
-      const tokenVenceEn = calcularVencimiento(ahora);
+      const bloqueoId = randomUUID();
+      const inicio = new Date();
+      const bloqueo = await Ticket.updateOne(
+        { _id: id, $or: [{ 'envio.bloqueoHasta': { $exists: false } }, { 'envio.bloqueoHasta': { $lte: inicio } }] },
+        { $set: { 'envio.bloqueoId': bloqueoId, 'envio.bloqueoHasta': new Date(inicio.getTime() + BLOQUEO_ENVIO_MS) } }
+      );
+      if (!bloqueo.matchedCount) return res.status(409).json({ error: 'Ya hay un envío en curso; vuelve a intentarlo' });
 
-      let actualizado;
-      let token;
-      if (
-        ticket.estado === 'diagnosticado' ||
-        ticket.estado === 'vencido' ||
-        ticket.estado === 'rechazado'
-      ) {
-        token = generarToken();
-        actualizado = await cambiarEstado(Ticket, {
-          id,
-          de: ticket.estado,
-          a: 'cotizacion_enviada',
+      let respuesta;
+      try {
+        respuesta = await (async () => {
+        // Releer bajo el bloqueo evita actuar sobre un estado anterior a otro envío.
+        const vigente = await Ticket.findById(id);
+        if (!vigente) return { status: 404, body: { error: 'Ticket no encontrado' } };
+
+        const precioMXN = centavos / 100;
+        const precioUSD = Math.round(centavos / tasa) / 100;
+        const ahora = new Date();
+        const precioSet = {
+          'cotizacion.precioFinalMXN': precioMXN,
+          'cotizacion.precioFinalUSD': precioUSD,
+          'cotizacion.leyenda': LEYENDA_PRECIO_FINAL,
+        };
+        const precioEntrada = {
+          precioFinalMXN: precioMXN,
+          en: ahora,
           por: req.session.userId,
-          ahora,
-          establecer: {
-            tokenHash: hashToken(token),
-            tokenVenceEn,
-            ...precioSet,
-            // El correo de este intento aun no ha salido.
-            'envio.enviado': false,
-          },
-          agregar: { precios: precioEntrada },
-        });
-      } else if (ticket.estado === 'cotizacion_enviada' && !ticket.envio?.enviado) {
-        token = generarToken();
-        actualizado = await Ticket.findOneAndUpdate(
-          { _id: id, estado: 'cotizacion_enviada', 'envio.enviado': false },
-          {
-            $set: {
+        };
+        const tokenVenceEn = calcularVencimiento(ahora);
+
+        let actualizado;
+        let token;
+        if (
+          vigente.estado === 'diagnosticado' ||
+          vigente.estado === 'vencido' ||
+          vigente.estado === 'rechazado'
+        ) {
+          token = generarToken();
+          actualizado = await cambiarEstado(Ticket, {
+            id,
+            de: vigente.estado,
+            a: 'cotizacion_enviada',
+            por: req.session.userId,
+            ahora,
+            bloqueoEnvioId: bloqueoId,
+            establecer: {
               tokenHash: hashToken(token),
               tokenVenceEn,
-              actualizadoEn: ahora,
               ...precioSet,
+              // El correo de este intento aun no ha salido.
+              'envio.enviado': false,
             },
-            $push: { precios: precioEntrada },
-          },
-          { new: true }
-        );
-      } else if (ticket.estado === 'cotizacion_enviada') {
-        return res.status(409).json({ error: 'La cotización ya fue enviada' });
-      } else {
-        return res.status(409).json({ error: 'El ticket no se puede enviar en su estado actual' });
-      }
+            agregar: { precios: precioEntrada },
+          });
+        } else if (vigente.estado === 'cotizacion_enviada' && !vigente.envio?.enviado) {
+          token = generarToken();
+          actualizado = await Ticket.findOneAndUpdate(
+            { _id: id, estado: 'cotizacion_enviada', 'envio.enviado': false, 'envio.bloqueoId': bloqueoId },
+            {
+              $set: {
+                tokenHash: hashToken(token),
+                tokenVenceEn,
+                actualizadoEn: ahora,
+                ...precioSet,
+              },
+              $push: { precios: precioEntrada },
+            },
+            { new: true }
+          );
+        } else if (vigente.estado === 'cotizacion_enviada') {
+          return { status: 409, body: { error: 'La cotización ya fue enviada' } };
+        } else {
+          return { status: 409, body: { error: 'El ticket no se puede enviar en su estado actual' } };
+        }
 
-      if (!actualizado) {
-        return res.status(409).json({ error: 'El estado del ticket cambió; vuelve a intentarlo' });
-      }
+        if (!actualizado) {
+          return { status: 409, body: { error: 'El estado del ticket cambió; vuelve a intentarlo' } };
+        }
 
-      const enlace = construirEnlace(config.publicAppUrl, token);
-      let resultado;
-      try {
-        resultado = await mailer.enviarCotizacion({
-          para: actualizado.cliente.correo,
-          nombre: actualizado.cliente.nombre,
-          enlace,
-          resumen: resumenTicket(actualizado),
-        });
-      } catch (error) {
-        const codigo = codigoDeEnvio(error);
-        await registrarIntento(Ticket, id, false, codigo);
-        console.error(`[correo] ticket=${id} codigo=${codigo}`);
-        return res.status(502).json({ error: 'No se pudo enviar la cotización' });
-      }
+        const enlace = construirEnlace(config.publicAppUrl, token);
+        let resultado;
+        try {
+          resultado = await mailer.enviarCotizacion({
+            para: actualizado.cliente.correo,
+            nombre: actualizado.cliente.nombre,
+            enlace,
+            resumen: resumenTicket(actualizado),
+          });
+        } catch (error) {
+          const codigo = codigoDeEnvio(error);
+          await registrarIntento(Ticket, id, bloqueoId, false, codigo);
+          console.error(`[correo] ticket=${id} codigo=${codigo}`);
+          return { status: 502, body: { error: 'No se pudo enviar la cotización' } };
+        }
 
-      if (resultado?.omitido) {
-        await registrarIntento(Ticket, id, false, 'sin_proveedor');
-        console.error(`[correo] ticket=${id} codigo=sin_proveedor`);
-        return res.status(502).json({ error: 'No se pudo enviar la cotización' });
-      }
+        if (resultado?.omitido) {
+          await registrarIntento(Ticket, id, bloqueoId, false, 'sin_proveedor');
+          console.error(`[correo] ticket=${id} codigo=sin_proveedor`);
+          return { status: 502, body: { error: 'No se pudo enviar la cotización' } };
+        }
 
-      await registrarIntento(Ticket, id, true, '');
-      const final = await Ticket.findById(id).select('-tokenHash -tokenVenceEn').lean();
-      return res.json(final || sinToken(actualizado));
+        const registrado = await registrarIntento(Ticket, id, bloqueoId, true, '');
+        if (!registrado.matchedCount) return { status: 409, body: { error: 'El envío cambió; revisa el ticket' } };
+        const final = await Ticket.findById(id).select('-tokenHash -tokenVenceEn').lean();
+        return { status: 200, body: sinToken(final || actualizado) };
+        })();
+      } finally {
+        try {
+          await Ticket.updateOne({ _id: id, 'envio.bloqueoId': bloqueoId }, { $unset: { 'envio.bloqueoId': '', 'envio.bloqueoHasta': '' } });
+        } catch {
+          console.error(`[correo] No se pudo liberar el bloqueo del ticket ${id}.`);
+        }
+      }
+      return res.status(respuesta.status).json(respuesta.body);
     } catch (error) {
       return next(error);
     }

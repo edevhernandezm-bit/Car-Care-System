@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Car Care: diagnóstico y cotizaciones",
+    "output": ".archify/architecture-car-care-actual-20261029/car-care-actualizado.html",
+    "quality_profile": "showcase",
+    "locale": "es",
+    "repository": {
+      "url": "https://github.com/edevhernandezm-bit/Car-Care-System.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "0a10db7e9abd7225a0d889de3382d777f0169c62"
+    }
+  },
+  "components": [
+    { "id": "usuario", "type": "external", "label": "Usuario", "sublabel": "Navegador", "pos": [40, 70], "size": [140, 64], "sources": [{ "path": "frontend/src/App.jsx", "line": 225, "end_line": 237 }] },
+    { "id": "frontend", "type": "frontend", "label": "Frontend React", "sublabel": "Vite y Vercel", "pos": [270, 70], "size": [160, 64], "sources": [{ "path": "frontend/vercel.json", "line": 1, "end_line": 6 }, { "path": "frontend/src/main.jsx", "line": 24, "end_line": 35 }] },
+    { "id": "api", "type": "backend", "label": "API Express", "sublabel": "sesiones y gateway", "pos": [540, 70], "size": [170, 64], "sources": [{ "path": "backend/server.js", "line": 715, "end_line": 725 }, { "path": "backend/server.js", "line": 1005, "end_line": 1024 }] },
+    { "id": "motor", "type": "backend", "label": "Motor Prolog", "sublabel": "reglas e inferencia", "pos": [850, 70], "size": [170, 64], "sources": [{ "path": "Prolog/motor_inferencia.pl", "line": 931, "end_line": 943 }, { "path": "Prolog/motor_inferencia.pl", "line": 1267, "end_line": 1270 }] },
+    { "id": "tickets", "type": "backend", "label": "Tickets", "sublabel": "cotizaciones", "pos": [540, 285], "size": [170, 64], "sources": [{ "path": "backend/tickets/rutas.js", "line": 151, "end_line": 162 }, { "path": "backend/tickets/publico.js", "line": 133, "end_line": 133 }] },
+    { "id": "mongo", "type": "database", "label": "MongoDB", "sublabel": "datos y sesiones", "pos": [850, 285], "size": [170, 64], "sources": [{ "path": "backend/server.js", "line": 715, "end_line": 719 }, { "path": "backend/tickets/rutas.js", "line": 290, "end_line": 305 }] },
+    { "id": "resend", "type": "external", "label": "Resend", "sublabel": "correo opcional", "pos": [540, 500], "size": [170, 64], "sources": [{ "path": "backend/tickets/correo.js", "line": 202, "end_line": 220 }, { "path": "backend/tickets/config.js", "line": 11, "end_line": 18 }] }
+  ],
+  "connections": [
+    { "id": "usuario-frontend", "from": "usuario", "to": "frontend", "label": "diagnóstico", "variant": "emphasis" },
+    { "id": "frontend-api", "from": "frontend", "to": "api", "label": "/api", "variant": "emphasis" },
+    { "id": "api-motor", "from": "api", "to": "motor", "label": "HTTP con token", "variant": "emphasis" },
+    { "id": "api-tickets", "from": "api", "to": "tickets", "label": "si está habilitado" },
+    { "id": "tickets-mongo", "from": "tickets", "to": "mongo", "label": "datos del ticket" },
+    { "id": "tickets-resend", "from": "tickets", "to": "resend", "label": "si usa Resend" },
+    { "id": "api-mongo", "from": "api", "to": "mongo", "label": "datos y sesiones" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Diagnóstico", "items": ["El usuario selecciona síntomas y el motor devuelve posibles fallas.", "El factor de certeza es heurístico, no una probabilidad."] },
+    { "dot": "emerald", "title": "Cotización", "items": ["El administrador crea un ticket y puede enviar la cotización por correo.", "El cliente responde mediante un enlace con token de vigencia limitada."] },
+    { "dot": "amber", "title": "Alcance", "items": ["El diagrama describe el código de la revisión fijada, no el estado actual de los servicios en la nube."] }
+  ]
+}

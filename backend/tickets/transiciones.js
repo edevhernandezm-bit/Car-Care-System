@@ -39,6 +39,7 @@ async function cambiarEstado(
     ahora = new Date(),
     tokenHash,
     exigirToken = false,
+    bloqueoEnvioId,
     establecer = {},
     agregar = {},
   } = {}
@@ -65,6 +66,7 @@ async function cambiarEstado(
   }
 
   const filtro = { _id: id, estado: de };
+  if (bloqueoEnvioId) filtro['envio.bloqueoId'] = bloqueoEnvioId;
   if (exigirToken) {
     if (typeof tokenHash !== 'string' || tokenHash.trim() === '') {
       throw new Error('Se requiere tokenHash para decidir la cotizacion.');

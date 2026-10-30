@@ -141,6 +141,8 @@ const ticketSchema = new mongoose.Schema(
         },
       },
       ultimoIntentoEn: { type: Date },
+      bloqueoId: { type: String },
+      bloqueoHasta: { type: Date },
     },
     // Nunca null: al salir de cotizacion_enviada se elimina con $unset.
     tokenHash: {
